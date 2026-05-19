@@ -1,6 +1,6 @@
 # Exam Infrastructure — Automated Deployment
 
-Single-command provisioning of a complete, secure, and observable stack on a bare Ubuntu/Debian VM.
+Single-command provisioning of a complete, secure, and observable stack.
 
 ## Stack
 
@@ -10,11 +10,46 @@ Single-command provisioning of a complete, secure, and observable stack on a bar
 | Application | Python (stdlib only) | Weather app, fetches API key from Vault at runtime |
 | Reverse Proxy | Nginx | Sole entry point, HTTP→HTTPS redirect |
 | Monitoring | Prometheus + Node Exporter + Grafana | CPU & RAM dashboard |
-| Dynamic DNS | cPanel API | Updates `exam.maximilianzimmer.com` to current Tailscale IP |
+| Dynamic DNS | cPanel API | Updates `exam.maximilianzimmer.com` to VM's public IP |
 
 ## Deployment
 
-### Commands used: 1
+### Option A — GCP (recommended)
+
+Provisions a free-tier `e2-micro` VM on Google Cloud, runs the setup script on it, and optionally configures the custom domain with a real TLS cert.
+
+```bash
+bash provision.sh
+```
+
+**Prerequisites:**
+```bash
+gcloud auth login
+gcloud config set project YOUR_PROJECT_ID
+```
+
+The provisioner prompts for everything upfront, then runs fully unattended:
+
+```
+  OpenWeatherMap API key: <hidden>
+  Configure custom domain (exam.maximilianzimmer.com)? [y/N]:
+
+  # If yes:
+  cPanel host     : <hidden>
+  cPanel username : <hidden>
+  cPanel password : <hidden>
+  Email (certbot) : <hidden>
+```
+
+What `provision.sh` does:
+1. Creates an `e2-micro` VM in `us-central1-a` (GCP always-free tier)
+2. Opens firewall ports 80, 443, 3000, 9090
+3. Copies and runs `setup_exam.sh` non-interactively
+4. (Optional) Updates the DNS A record via cPanel API, waits for propagation, and issues a Let's Encrypt cert via certbot
+
+### Option B — local/any VM
+
+SSH into any fresh Ubuntu/Debian VM and run:
 
 ```bash
 sudo bash setup_exam.sh
@@ -23,7 +58,8 @@ sudo bash setup_exam.sh
 The script prompts for credentials interactively (nothing stored in shell history):
 
 ```
-Set up Tailscale + custom domain? [y/N]:
+  OpenWeatherMap API key: <hidden>
+  Configure Tailscale + custom domain? [y/N]:
 
   # If yes:
   Tailscale auth key : <hidden>
@@ -32,13 +68,7 @@ Set up Tailscale + custom domain? [y/N]:
   cPanel password    : <hidden>
 ```
 
-### Or run directly from this repo on a fresh VM
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/maximilianzimmer/exam-deploy/main/setup_exam.sh | sudo bash
-```
-
-## What the script does
+## What `setup_exam.sh` does
 
 1. Installs all packages from scratch (Vault, Grafana via apt; Prometheus + Node Exporter via binary; Nginx via apt)
 2. Initialises and unseals Vault, stores secrets — installs auto-unseal service so reboots don't break the app
@@ -52,7 +82,7 @@ curl -fsSL https://raw.githubusercontent.com/maximilianzimmer/exam-deploy/main/s
 
 | Service | URL |
 |---|---|
-| Application | `https://exam.maximilianzimmer.com` (Tailscale) or `https://<VM-IP>` |
+| Application | `https://exam.maximilianzimmer.com` or `https://<VM-IP>` |
 | Grafana | `http://<VM-IP>:3000` — admin / admin |
 | Prometheus | `http://<VM-IP>:9090` |
 | Vault UI | `http://127.0.0.1:8200/ui` — internal only |
@@ -62,4 +92,4 @@ curl -fsSL https://raw.githubusercontent.com/maximilianzimmer/exam-deploy/main/s
 - Application source contains no secrets — API key is fetched from Vault at runtime
 - Vault token is injected via `/etc/webapp.env` (mode 600, owned by `appuser`)
 - `/metrics` endpoint is blocked at the Nginx level
-- All credentials entered at setup time are `unset` immediately after being written to Vault
+- All credentials are prompted interactively and never written to shell history

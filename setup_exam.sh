@@ -17,23 +17,26 @@ echo "│         Exam Environment Setup Script           │"
 echo "└─────────────────────────────────────────────────┘"
 echo ""
 
-while true; do
-    read -rsp "  OpenWeatherMap API key: " WEATHER_API_KEY; echo
-    [[ -n "$WEATHER_API_KEY" ]] && break
-    echo "  API key cannot be empty. Please try again."
-done
+if [[ -z "${WEATHER_API_KEY:-}" ]]; then
+    while true; do
+        read -rsp "  OpenWeatherMap API key: " WEATHER_API_KEY; echo
+        [[ -n "$WEATHER_API_KEY" ]] && break
+        echo "  API key cannot be empty. Please try again."
+    done
+fi
 
-echo ""
-read -rp "Set up Tailscale + custom domain? [y/N]: " _ts_answer
-USE_TAILSCALE=false
-[[ "${_ts_answer,,}" =~ ^y(es)?$ ]] && USE_TAILSCALE=true
+if [[ -z "${USE_TAILSCALE:-}" ]]; then
+    echo ""
+    read -rp "Set up Tailscale + custom domain? [y/N]: " _ts_answer
+    USE_TAILSCALE=false
+    [[ "${_ts_answer,,}" =~ ^y(es)?$ ]] && USE_TAILSCALE=true
+fi
 
 if $USE_TAILSCALE; then
-    echo ""
-    read -rsp "  Tailscale auth key : " TAILSCALE_AUTH_KEY; echo
-    read -rp  "  cPanel host        : " CPANEL_HOST;        echo
-    read -rp  "  cPanel username    : " CPANEL_USER;        echo
-    read -rsp "  cPanel password    : " CPANEL_PASS;        echo
+    [[ -z "${TAILSCALE_AUTH_KEY:-}" ]] && { echo ""; read -rsp "  Tailscale auth key : " TAILSCALE_AUTH_KEY; echo; }
+    [[ -z "${CPANEL_HOST:-}" ]]        && { read -rp  "  cPanel host        : " CPANEL_HOST; echo; }
+    [[ -z "${CPANEL_USER:-}" ]]        && { read -rp  "  cPanel username    : " CPANEL_USER; echo; }
+    [[ -z "${CPANEL_PASS:-}" ]]        && { read -rsp "  cPanel password    : " CPANEL_PASS; echo; }
     echo ""
 fi
 
