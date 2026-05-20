@@ -102,8 +102,16 @@ for rule_spec in "allow-exam-grafana:3000" "allow-exam-prometheus:9090"; do
     fi
 done
 
-# ── [3/4] Run setup script ─────────────────────────────────────────────────────
-log "[3/4] Running setup script"
+# ── [3/4] Upload files and run setup ──────────────────────────────────────────
+log "[3/4] Uploading files and running setup"
+
+# Stream a tar of all deployment files in one SSH connection. This keeps the
+# files together on the VM so setup_exam.sh's SCRIPT_DIR resolves correctly and
+# deploy_app.sh / webapp.py / ddns-update.py are all reachable from it.
+tar -cz -C "$SCRIPT_DIR" setup_exam.sh deploy_app.sh webapp.py ddns-update.py \
+  | gcloud compute ssh "$INSTANCE_NAME" --zone="$ZONE" \
+    --ssh-flag="-o StrictHostKeyChecking=no" \
+    --command="mkdir -p /tmp/exam && tar -xz -C /tmp/exam && chmod +x /tmp/exam/*.sh"
 
 {
     printf 'export WEATHER_API_KEY=%q\n' "$WEATHER_API_KEY"
@@ -114,12 +122,7 @@ log "[3/4] Running setup script"
 
 gcloud compute ssh "$INSTANCE_NAME" --zone="$ZONE" \
     --ssh-flag="-o StrictHostKeyChecking=no" \
-    --command="cat > /tmp/setup_exam.sh && chmod +x /tmp/setup_exam.sh" \
-    < "$SCRIPT_DIR/setup_exam.sh"
-
-gcloud compute ssh "$INSTANCE_NAME" --zone="$ZONE" \
-    --ssh-flag="-o StrictHostKeyChecking=no" \
-    --command="set -a; source /tmp/exam_env.sh; set +a; sudo -E bash /tmp/setup_exam.sh; rm -f /tmp/exam_env.sh"
+    --command="set -a; source /tmp/exam_env.sh; set +a; sudo -E bash /tmp/exam/setup_exam.sh; rm -f /tmp/exam_env.sh"
 
 # ── [4/4] Domain: DNS update + TLS cert ───────────────────────────────────────
 if $USE_DOMAIN; then

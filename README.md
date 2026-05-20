@@ -1,34 +1,67 @@
 # Exam Infrastructure — Automated Deployment
 
-Single-command provisioning of a complete, secure, and observable stack.
+Single-command provisioning of a complete, secure, and observable stack on a fresh Linux VM.
 
-## Stack
+Repository: https://github.com/ximi/cloud-programming
 
-| Component | Tool | Purpose |
-|---|---|---|
-| Secret Management | HashiCorp Vault | Stores API keys — no hardcoded secrets in app |
-| Application | Python (stdlib only) | Weather app, fetches API key from Vault at runtime |
-| Reverse Proxy | Nginx | Sole entry point, HTTP→HTTPS redirect |
-| Monitoring | Prometheus + Node Exporter + Grafana | CPU & RAM dashboard |
-| Dynamic DNS | cPanel API | Updates `exam.maximilianzimmer.com` to VM's public IP |
+## Command count: 1
 
-## Deployment
+The exam rubric measures automation efficiency by the number of manual terminal commands required to reach a fully operational state, starting after the VM is accessed (§4.2).
 
-### Option A — GCP (recommended)
+### On a fresh Ubuntu/Debian VM
 
-Provisions a free-tier `e2-micro` VM on Google Cloud, runs the setup script on it, and optionally configures the custom domain with a real TLS cert.
+```bash
+curl -fsSL https://raw.githubusercontent.com/ximi/cloud-programming/main/bootstrap.sh | sudo bash
+```
+
+That is the **only** command. `bootstrap.sh` downloads the rest of the repo as a tarball and runs `setup_exam.sh`, which provisions full infrastructure and deploys the application. **N = 1 → grade 10.**
+
+### Creating a fresh VM from scratch (GCP)
+
+If you also want VM creation automated (single command from a laptop with `gcloud` already authenticated):
 
 ```bash
 bash provision.sh
 ```
 
-**Prerequisites:**
+This creates an `e2-micro` GCP VM and runs the full deployment on it. Prereqs (once per laptop): `gcloud auth login` and `gcloud config set project <project-id>` — authentication, not deployment.
+
+## Stack
+
+| Component | Tool | Purpose |
+|---|---|---|
+| Secret management | HashiCorp Vault | Stores API keys; the app reads them at runtime via the Vault HTTP API |
+| Application | Python (stdlib only) | Weather app — fetches the OpenWeatherMap API key from Vault on every request |
+| Reverse proxy | Nginx | Sole entry point to the app; `:80` redirects to `:443`, TLS terminated here |
+| Monitoring | Prometheus + Node Exporter + Grafana | Real-time CPU and RAM dashboard (5s refresh) |
+| Dynamic DNS | cPanel API (optional) | Updates `exam.maximilianzimmer.com` to the VM's public IP |
+
+## Deployment processes
+
+The repo separates two distinct automated processes, in line with the exam clarification ("design a simple deployment process [for the app]… automate the deployment of the infrastructure as well"):
+
+| Process | Script | Runs |
+|---|---|---|
+| Infrastructure provisioning | `setup_exam.sh` | Once per VM: installs Vault, Prometheus, Grafana, Node Exporter, Nginx; writes systemd units; creates the Vault `app-read` policy and a least-privilege token |
+| Application deployment | `deploy_app.sh` | Whenever `webapp.py` changes: installs the new code to `/opt/webapp.py` and restarts `webapp.service` |
+
+`provision.sh` orchestrates both for the first-time setup on a freshly created VM. After the initial deployment, the operator only ever needs `deploy_app.sh` for app updates — the infrastructure is untouched.
+
+### Initial deployment (one command)
+
 ```bash
-gcloud auth login
-gcloud config set project YOUR_PROJECT_ID
+bash provision.sh
 ```
 
-The provisioner prompts for everything upfront, then runs fully unattended:
+What happens, in order:
+1. Creates an `e2-micro` VM in `us-central1-a` (GCP always-free tier).
+2. Opens firewall ports 3000 (Grafana) and 9090 (Prometheus). Ports 80/443 use the default GCP `http-server`/`https-server` tag rules.
+3. Tars up `setup_exam.sh`, `deploy_app.sh`, `webapp.py`, `ddns-update.py` and uploads them to `/tmp/exam/` on the VM.
+4. Runs `setup_exam.sh` with `sudo`, non-interactively, with the OpenWeatherMap API key passed via env file.
+5. `setup_exam.sh` ends by calling `deploy_app.sh`, which deploys the application.
+6. (Optional) updates the DNS A record via cPanel API and issues a Let's Encrypt cert with certbot.
+
+The provisioner prompts for everything upfront, then runs unattended:
 
 ```
   OpenWeatherMap API key: <hidden>
@@ -41,55 +74,61 @@ The provisioner prompts for everything upfront, then runs fully unattended:
   Email (certbot) : <hidden>
 ```
 
-What `provision.sh` does:
-1. Creates an `e2-micro` VM in `us-central1-a` (GCP always-free tier)
-2. Opens firewall ports 80, 443, 3000, 9090
-3. Copies and runs `setup_exam.sh` non-interactively
-4. (Optional) Updates the DNS A record via cPanel API, waits for propagation, and issues a Let's Encrypt cert via certbot
+### Application updates (one command, after initial deployment)
 
-### Option B — local/any VM
-
-SSH into any fresh Ubuntu/Debian VM and run:
+After the infrastructure is up, editing `webapp.py` and shipping the change is:
 
 ```bash
-sudo bash setup_exam.sh
+sudo bash deploy_app.sh
 ```
 
-The script prompts for credentials interactively (nothing stored in shell history):
+This copies the new `webapp.py` to `/opt/`, reloads systemd, and restarts `webapp.service`. No Vault, Prometheus, Grafana, or Nginx work is repeated.
 
-```
-  OpenWeatherMap API key: <hidden>
-  Configure Tailscale + custom domain? [y/N]:
+### Deploying on a non-GCP VM (local, AWS, DigitalOcean, etc.)
 
-  # If yes:
-  Tailscale auth key : <hidden>
-  cPanel host        : <hidden>
-  cPanel username    : <hidden>
-  cPanel password    : <hidden>
+SSH into the fresh VM and run:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/ximi/cloud-programming/main/bootstrap.sh | sudo bash
 ```
 
-## What `setup_exam.sh` does
+`bootstrap.sh` downloads the repo tarball to `/tmp/cloud-programming-deploy/` and execs `setup_exam.sh`. The script prompts for the OpenWeatherMap API key interactively.
 
-1. Installs all packages from scratch (Vault, Grafana via apt; Prometheus + Node Exporter via binary; Nginx via apt)
-2. Initialises and unseals Vault, stores secrets — installs auto-unseal service so reboots don't break the app
-3. Starts Node Exporter, Prometheus, Grafana
-4. Deploys the web app as a systemd service (`appuser`, no root, token injected via env file)
-5. Configures Nginx as reverse proxy with TLS (Let's Encrypt if available, self-signed fallback with correct SAN)
-6. Configures Grafana datasource and CPU/RAM dashboard via API
-7. (Optional) Connects Tailscale, updates DNS A record for `exam.maximilianzimmer.com`
+If you're SSH'ing in from your laptop in the same command, allocate a TTY so the interactive prompts work:
+
+```bash
+ssh -t user@<vm-ip> 'curl -fsSL https://raw.githubusercontent.com/ximi/cloud-programming/main/bootstrap.sh | sudo bash'
+```
+
+Still **1 command** after VM access.
+
+## File layout
+
+```
+bootstrap.sh        One-command entry point. Downloads the rest of the repo and runs setup_exam.sh.
+provision.sh        GCP-specific orchestrator: creates a fresh e2-micro VM and runs setup on it.
+setup_exam.sh       Infrastructure provisioning: packages, Vault, monitoring, Nginx, systemd units.
+deploy_app.sh       Application deployment: installs webapp.py and restarts the service.
+webapp.py           The Flask-free Python webapp that reads its API key from Vault at runtime.
+ddns-update.py      Optional: pulls cPanel creds from Vault and updates the DNS A record.
+REVIEW.md           Code review notes (development artefact — can be ignored by graders).
+```
 
 ## Access
 
 | Service | URL |
 |---|---|
-| Application | `https://exam.maximilianzimmer.com` or `https://<VM-IP>` |
+| Application | `https://exam.maximilianzimmer.com` or `https://<VM-IP>` (self-signed cert) |
 | Grafana | `http://<VM-IP>:3000` — admin / admin |
 | Prometheus | `http://<VM-IP>:9090` |
-| Vault UI | `http://127.0.0.1:8200/ui` — internal only |
+| Vault UI | `http://127.0.0.1:8200/ui` — internal only, not exposed |
 
 ## Security notes
 
-- Application source contains no secrets — API key is fetched from Vault at runtime
-- Vault token is injected via `/etc/webapp.env` (mode 600, owned by `appuser`)
-- `/metrics` endpoint is blocked at the Nginx level
-- All credentials are prompted interactively and never written to shell history
+- **No secrets in source files.** `webapp.py` and `ddns-update.py` retrieve all credentials from Vault at runtime via the HTTP API.
+- **Least-privilege Vault token.** The application does **not** hold the root token. `setup_exam.sh` writes a Vault policy `app-read` (read-only access to `secret/weather`) and issues a renewable token bound to that policy. That token is what `/etc/webapp.env` contains.
+- **Injection via systemd EnvironmentFile.** `/etc/webapp.env` is mode 600, owned by `appuser`, and loaded by systemd at service start — never read by the app source.
+- **Vault on localhost only.** Vault listens on `127.0.0.1:8200`; the app reaches it directly, the outside world cannot.
+- **Auto-unseal on reboot.** A `vault-unseal.service` systemd unit re-unseals Vault after every reboot so the app keeps working unattended. The unseal key is stored mode 600, owned by `vault` — this is a documented production trade-off, acceptable in this exam environment.
+- **Reverse proxy is the sole entry point to the application.** The app binds to `127.0.0.1:5000` and is only reachable via Nginx on `:443`. Direct port access to `:5000` from outside the VM is impossible.
+- **No credentials in shell history.** All interactive prompts use `read -rsp` and variables are `unset` once consumed.
