@@ -37,10 +37,11 @@ if [[ -z "${USE_TAILSCALE:-}" ]]; then
 fi
 
 if $USE_TAILSCALE; then
-    [[ -z "${TAILSCALE_AUTH_KEY:-}" ]] && { echo ""; read -rsp "  Tailscale auth key : " TAILSCALE_AUTH_KEY < /dev/tty; echo; }
-    [[ -z "${CPANEL_HOST:-}" ]]        && { read -rp  "  cPanel host        : " CPANEL_HOST       < /dev/tty; echo; }
-    [[ -z "${CPANEL_USER:-}" ]]        && { read -rp  "  cPanel username    : " CPANEL_USER       < /dev/tty; echo; }
-    [[ -z "${CPANEL_PASS:-}" ]]        && { read -rsp "  cPanel password    : " CPANEL_PASS       < /dev/tty; echo; }
+    [[ -z "${TAILSCALE_AUTH_KEY:-}" ]] && { echo ""; read -rsp "  Tailscale auth key   : " TAILSCALE_AUTH_KEY < /dev/tty; echo; }
+    [[ -z "${CPANEL_HOST:-}" ]]        && { read -rp  "  cPanel host          : " CPANEL_HOST       < /dev/tty; echo; }
+    [[ -z "${CPANEL_USER:-}" ]]        && { read -rp  "  cPanel username      : " CPANEL_USER       < /dev/tty; echo; }
+    [[ -z "${CPANEL_PASS:-}" ]]        && { read -rsp "  cPanel password      : " CPANEL_PASS       < /dev/tty; echo; }
+    [[ -z "${CERTBOT_EMAIL:-}" ]]      && { read -rp  "  Email (Let's Encrypt): " CERTBOT_EMAIL     < /dev/tty; echo; }
     echo ""
 fi
 
@@ -621,6 +622,45 @@ if $USE_TAILSCALE; then
             python3 /opt/ddns-update.py "$TAILSCALE_IP"
     else
         echo "  Warning: could not get Tailscale IP, DNS not updated"
+    fi
+
+    # ── Let's Encrypt cert via DNS-01 ──────────────────────────────────────
+    # HTTP-01 doesn't work here: the A record points to a 100.x.x.x Tailscale
+    # IP, which LE's validator can't reach from the public internet. DNS-01
+    # sidesteps this — we prove control via a TXT record on the public zone,
+    # which is unaffected by where the A record points.
+    if [[ -n "${CERTBOT_EMAIL:-}" ]]; then
+        log "Issuing Let's Encrypt cert via DNS-01"
+        apt-get install -y -qq certbot
+
+        install -m 755 "$SCRIPT_DIR/cpanel-dns-hook.py" /opt/cpanel-dns-hook.py
+
+        # Vault token for the hook script lives in a file (mode 600) so it
+        # doesn't end up baked into certbot's renewal config under
+        # /etc/letsencrypt/renewal/<domain>.conf.
+        cat > /etc/cpanel-dns-hook.env <<EOF
+VAULT_ADDR=$VAULT_ADDR
+VAULT_TOKEN=$DDNS_TOKEN
+EOF
+        chmod 600 /etc/cpanel-dns-hook.env
+
+        if certbot certonly \
+            --manual --preferred-challenges dns \
+            --manual-auth-hook    '/opt/cpanel-dns-hook.py auth' \
+            --manual-cleanup-hook '/opt/cpanel-dns-hook.py cleanup' \
+            -d "$EXTERNAL_HOST" \
+            --non-interactive --agree-tos --email "$CERTBOT_EMAIL"; then
+
+            # Swap the nginx cert paths from self-signed to LE, then reload.
+            sed -i \
+                -e "s|/etc/ssl/certs/exam-selfsigned.pem|/etc/letsencrypt/live/$EXTERNAL_HOST/fullchain.pem|" \
+                -e "s|/etc/ssl/private/exam-selfsigned.key|/etc/letsencrypt/live/$EXTERNAL_HOST/privkey.pem|" \
+                /etc/nginx/sites-available/default
+            nginx -t && systemctl reload nginx
+            echo "  Nginx now serving Let's Encrypt cert for $EXTERNAL_HOST"
+        else
+            echo "  certbot failed — keeping the self-signed cert (still TLS, just untrusted)"
+        fi
     fi
 fi
 
