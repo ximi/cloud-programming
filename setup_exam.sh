@@ -610,9 +610,12 @@ if $USE_TAILSCALE; then
         echo "  Tailscale IP: ${TAILSCALE_IP}"
         echo "  Updating DNS for ${EXTERNAL_HOST}..."
 
-        # Use the least-privilege DDNS token, not the root token.
+        # Use the least-privilege DDNS token, not the root token. Pass the
+        # Tailscale IP explicitly — otherwise the script falls back to a
+        # public-IP echo and points DNS at the home router's WAN, which is
+        # the opposite of what Tailscale is for here.
         VAULT_TOKEN="$DDNS_TOKEN" VAULT_ADDR="$VAULT_ADDR" \
-            python3 /opt/ddns-update.py
+            python3 /opt/ddns-update.py "$TAILSCALE_IP"
     else
         echo "  Warning: could not get Tailscale IP, DNS not updated"
     fi

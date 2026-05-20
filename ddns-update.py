@@ -96,19 +96,29 @@ def main():
     cp_user = creds["username"]
     cp_pass = creds["password"]
 
-    public_ip = get_public_ip()
+    # Target IP precedence: explicit CLI arg > public-IP echo. The Tailscale
+    # case passes the Tailscale 100.x.x.x address as argv[1] — that's the
+    # routable VM address on the Tailscale net, not the home router's WAN.
+    if len(sys.argv) > 1 and sys.argv[1]:
+        target_ip = sys.argv[1]
+    else:
+        target_ip = get_public_ip()
+        if not target_ip:
+            print("ERROR: could not determine an IP and none was provided", file=sys.stderr)
+            sys.exit(1)
+
     current_ip, line = get_current_dns_ip(cp_host, cp_user, cp_pass)
 
-    if current_ip == public_ip:
-        print(f"DNS already correct: {SUBDOMAIN} -> {public_ip}")
+    if current_ip == target_ip:
+        print(f"DNS already correct: {SUBDOMAIN} -> {target_ip}")
         return
 
     if line:
-        update_dns(cp_host, cp_user, cp_pass, line, public_ip)
-        print(f"Updated {SUBDOMAIN}: {current_ip} -> {public_ip}")
+        update_dns(cp_host, cp_user, cp_pass, line, target_ip)
+        print(f"Updated {SUBDOMAIN}: {current_ip} -> {target_ip}")
     else:
-        add_dns(cp_host, cp_user, cp_pass, public_ip)
-        print(f"Created {SUBDOMAIN} -> {public_ip}")
+        add_dns(cp_host, cp_user, cp_pass, target_ip)
+        print(f"Created {SUBDOMAIN} -> {target_ip}")
 
 
 if __name__ == "__main__":
