@@ -209,6 +209,13 @@ touch /etc/vault.d/vault.env
 cat > /etc/vault.d/vault.hcl << 'EOF'
 ui = true
 
+# Don't mlockall() — on small VMs (e2-micro, even some e2-small) Vault would
+# pin ~400-500 MB of RAM in place, push everything else into swap, and the
+# whole system would drown in I/O wait. The security trade-off (Vault pages
+# may end up on swap) is acceptable here; in production you'd give Vault
+# enough RAM that mlock isn't catastrophic.
+disable_mlock = true
+
 storage "file" {
   path = "/opt/vault/data"
 }
@@ -566,7 +573,9 @@ sleep 5
 # which is more reliable than `PUT /api/user/password` (the latter refuses on
 # Grafana 10+'s "first login must change password" state).
 GRAFANA_PASS=$(openssl rand -base64 32 | tr -dc 'A-Za-z0-9' | head -c 24)
-if grafana-cli admin reset-admin-password "$GRAFANA_PASS" >/dev/null 2>&1; then
+# --homepath is required as of Grafana 12+ — without it grafana-cli can't
+# locate its config defaults and exits with "Grafana-server Init Failed".
+if grafana-cli --homepath=/usr/share/grafana admin reset-admin-password "$GRAFANA_PASS" >/dev/null 2>&1; then
     echo "  Grafana admin password rotated"
 else
     echo "  Warning: grafana-cli reset-admin-password failed — keeping admin/admin"
