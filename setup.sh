@@ -7,6 +7,11 @@ PROMETHEUS_VERSION="2.52.0"
 NODE_EXPORTER_VERSION="1.8.2"
 export VAULT_ADDR="http://127.0.0.1:8200"
 export DEBIAN_FRONTEND=noninteractive
+# Silence Ubuntu 22.04's needrestart post-apt hook. We restart the services we
+# care about explicitly below, and the "Running kernel seems to be up-to-date"
+# spam after every apt-get install is just noise.
+export NEEDRESTART_SUSPEND=1        # disable the hook entirely (needrestart >= 3.5)
+export NEEDRESTART_MODE=a           # fallback for older versions: auto, no prompts
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
@@ -33,7 +38,7 @@ if [[ -z "${USE_TAILSCALE:-}" ]]; then
     echo ""
     read -rp "Set up Tailscale + custom domain? [y/N]: " _ts_answer < /dev/tty
     USE_TAILSCALE=false
-    [[ "${_ts_answer,,}" =~ ^y(es)?$ ]] && USE_TAILSCALE=true
+    [[ "$_ts_answer" =~ ^[yY]([eE][sS])?$ ]] && USE_TAILSCALE=true
 fi
 
 if $USE_TAILSCALE; then

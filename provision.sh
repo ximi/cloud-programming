@@ -93,7 +93,9 @@ done
 echo ""
 read -rp "  Configure custom domain ($DOMAIN)? [y/N]: " _domain_answer < /dev/tty
 USE_DOMAIN=false
-[[ "${_domain_answer,,}" =~ ^y(es)?$ ]] && USE_DOMAIN=true
+# Portable case-insensitive match — macOS still ships bash 3.2, where the
+# bash-4+ `${var,,}` lowercase expansion is a syntax error.
+[[ "$_domain_answer" =~ ^[yY]([eE][sS])?$ ]] && USE_DOMAIN=true
 
 CPANEL_HOST="" CPANEL_USER="" CPANEL_PASS="" CERTBOT_EMAIL=""
 if $USE_DOMAIN; then

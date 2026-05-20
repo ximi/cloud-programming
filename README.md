@@ -155,12 +155,22 @@ The helper prompts for the unseal key, runs `vault operator unseal`, and restart
 ```
 bootstrap.sh         One-command entry point. Downloads the rest of the repo and runs setup.sh.
 provision.sh         GCP orchestrator: creates a fresh e2-micro VM and runs setup on it.
-setup.sh        Infrastructure provisioning: packages, Vault, monitoring, Nginx, systemd units.
+decommission.sh      Tears down the GCP VM and any stale firewall rules (prompts before deleting).
+setup.sh             Infrastructure provisioning: packages, Vault, monitoring, Nginx, systemd units.
 deploy_app.sh        Application deployment: fetches webapp.py from a URL and restarts the service.
 webapp.py            The Flask-free Python webapp that reads its API key from Vault at runtime.
 ddns-update.py       Pulls cPanel creds from Vault and updates the DNS A record (Tailscale path).
 cpanel-dns-hook.py   certbot DNS-01 hook for cPanel — used to issue/renew the LE cert on Tailscale.
 ```
+
+To tear down the GCP VM between test runs:
+
+```bash
+bash decommission.sh         # interactive; prompts before deleting
+bash decommission.sh --yes   # skip the confirmation
+```
+
+It honours the same `INSTANCE_NAME` / `ZONE` env vars as `provision.sh`, so anything you customised at provision time you customise the same way at decommission time.
 
 ## Security notes
 
