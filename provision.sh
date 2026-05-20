@@ -28,6 +28,15 @@ REPO_RAW_URL="${REPO_RAW_URL:-https://raw.githubusercontent.com/ximi/cloud-progr
 
 log() { echo; echo "=== $* ==="; }
 
+# Flags applied to every gcloud-ssh call. Single-quoted -LC_* prevents the
+# shell from globbing the asterisk; the value is passed verbatim to ssh,
+# which interprets it as a pattern to remove from SendEnv.
+SSH_FLAGS=(
+    --ssh-flag="-o StrictHostKeyChecking=no"
+    --ssh-flag="-o SendEnv=-LC_*"
+    --ssh-flag="-o ConnectTimeout=5"
+)
+
 # ── Failure handler ───────────────────────────────────────────────────────────
 # If provisioning fails after the VM is created, the VM keeps running (and
 # accruing cost). Warn the user with the exact delete command so they don't
@@ -187,9 +196,7 @@ SSH_RETRIES=60   # 60 × (5s sleep + ≤5s connect) → up to ~10 min worst case
 echo "  Polling SSH (each attempt caps at 5s; status update every 30s)..."
 for i in $(seq 1 $SSH_RETRIES); do
     if gcloud compute ssh "$INSTANCE_NAME" --zone="$ZONE" \
-        --ssh-flag="-o ConnectTimeout=5" \
-        --ssh-flag="-o StrictHostKeyChecking=no" \
-        --ssh-flag='-o SendEnv=-LC_*' \
+        "${SSH_FLAGS[@]}" \
         --command="true" &>/dev/null; then
         echo "  SSH ready (after ~$((i * 5))s)"
         break
@@ -212,12 +219,12 @@ log "[3/4] Running bootstrap on VM"
     printf 'export USE_TAILSCALE=false\n'
     printf 'export EXTERNAL_HOST=%q\n' "$EXTERNAL_HOST_VALUE"
 } | gcloud compute ssh "$INSTANCE_NAME" --zone="$ZONE" \
-    --ssh-flag="-o StrictHostKeyChecking=no" --ssh-flag='-o SendEnv=-LC_*' \
+    "${SSH_FLAGS[@]}" \
     --command="cat > /tmp/exam_env.sh && chmod 600 /tmp/exam_env.sh"
 
 # Source the env, curl bootstrap.sh, and run as root with the env preserved.
 gcloud compute ssh "$INSTANCE_NAME" --zone="$ZONE" \
-    --ssh-flag="-o StrictHostKeyChecking=no" --ssh-flag='-o SendEnv=-LC_*' \
+    "${SSH_FLAGS[@]}" \
     --command="source /tmp/exam_env.sh && \
                curl -fsSL '${REPO_RAW_URL}/bootstrap.sh' \
                  | sudo --preserve-env=WEATHER_API_KEY,USE_TAILSCALE,EXTERNAL_HOST bash && \
@@ -266,7 +273,7 @@ if $USE_DOMAIN; then
     # Same noise suppression we apply inside setup.sh, but this is a separate
     # SSH session so the env doesn't carry over from the bootstrap call.
     gcloud compute ssh "$INSTANCE_NAME" --zone="$ZONE" \
-        --ssh-flag="-o StrictHostKeyChecking=no" --ssh-flag='-o SendEnv=-LC_*' \
+        "${SSH_FLAGS[@]}" \
         --command="export NEEDRESTART_SUSPEND=1 NEEDRESTART_MODE=a LC_ALL=C.UTF-8 LANG=C.UTF-8 && \
                    sudo --preserve-env=NEEDRESTART_SUSPEND,NEEDRESTART_MODE,LC_ALL,LANG \
                        apt-get install -y -qq certbot python3-certbot-nginx && \

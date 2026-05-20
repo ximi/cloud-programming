@@ -3,8 +3,8 @@
 # Usage: sudo bash setup.sh
 set -euo pipefail
 
-PROMETHEUS_VERSION="2.52.0"
-NODE_EXPORTER_VERSION="1.8.2"
+PROMETHEUS_VERSION="${PROMETHEUS_VERSION:-2.52.0}"
+NODE_EXPORTER_VERSION="${NODE_EXPORTER_VERSION:-1.8.2}"
 export VAULT_ADDR="http://127.0.0.1:8200"
 export DEBIAN_FRONTEND=noninteractive
 # Silence Ubuntu 22.04's needrestart post-apt hook. We restart the services we
@@ -380,6 +380,7 @@ Type=simple
 ExecStart=/usr/local/bin/prometheus \\
     --config.file=/etc/prometheus/prometheus.yml \\
     --storage.tsdb.path=/var/lib/prometheus/ \\
+    --storage.tsdb.retention.time=7d \\
     --web.console.templates=/etc/prometheus/consoles \\
     --web.console.libraries=/etc/prometheus/console_libraries \\
     --web.external-url=https://${EXTERNAL_HOST}/prometheus/ \\
@@ -601,7 +602,7 @@ curl -sf -u "admin:${GRAFANA_PASS}" -X POST http://localhost:3000/grafana/api/da
   -d '{
     "dashboard": {
       "title": "VM Resources - CPU & RAM",
-      "refresh": "5s",
+      "refresh": "15s",
       "panels": [
         {
           "id": 1,
