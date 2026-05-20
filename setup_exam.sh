@@ -147,40 +147,61 @@ EOF
 systemctl daemon-reload
 systemctl enable vault
 systemctl restart vault
-sleep 3
 
-if vault status 2>&1 | grep -q "Initialized.*false"; then
-    INIT_OUT=$(vault operator init -key-shares=1 -key-threshold=1 -format=json)
-    UNSEAL_KEY=$(echo "$INIT_OUT" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['unseal_keys_b64'][0])")
-    ROOT_TOKEN=$(echo "$INIT_OUT" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['root_token'])")
+# Wait for Vault's HTTP listener to be up. vault.service is Type=simple, so
+# `systemctl restart` returns the moment the process is forked — well before
+# the API is ready. A bare `sleep 3` was too short on some VMs and the
+# resulting connection-refused looks identical to "already initialized" if we
+# only grep for one line of `vault status` output.
+for _ in $(seq 1 30); do
+    vault status 2>&1 | grep -q "Initialized" && break
+    sleep 1
+done
 
-    # Show the unseal key prominently. It is the operator's responsibility from
-    # this point onward — we do NOT write it to disk.
-    echo ""
-    echo "╔═══════════════════════════════════════════════════════════════════════╗"
-    echo "║                                                                       ║"
-    echo "║   VAULT UNSEAL KEY  —  SAVE THIS NOW.  IT IS NOT WRITTEN TO DISK.     ║"
-    echo "║                                                                       ║"
-    printf  "║   %-67s ║\n" "$UNSEAL_KEY"
-    echo "║                                                                       ║"
-    echo "║   You will need it to unseal Vault after any reboot.                  ║"
-    echo "║   Recovery command:  sudo /opt/unseal-vault.sh                        ║"
-    echo "║                                                                       ║"
-    echo "╚═══════════════════════════════════════════════════════════════════════╝"
-    echo ""
+VAULT_STATUS=$(vault status 2>&1 || true)
 
-    if [[ -r /dev/tty ]]; then
-        read -rp "  Press ENTER once you have saved the unseal key... " _ack < /dev/tty || true
-    fi
+if ! echo "$VAULT_STATUS" | grep -q "Initialized"; then
+    echo "ERROR: Vault did not become reachable within 30s."
+    echo "  Last vault status output:"
+    echo "$VAULT_STATUS" | sed 's/^/    /'
+    echo "  Recent vault logs:"
+    journalctl -u vault -n 30 --no-pager 2>/dev/null | sed 's/^/    /' || true
+    exit 1
+fi
 
-    vault operator unseal "$UNSEAL_KEY" >/dev/null
-    unset UNSEAL_KEY
-else
+if echo "$VAULT_STATUS" | grep -q "Initialized.*true"; then
     echo "ERROR: Vault is already initialized. This script expects a fresh Vault."
     echo "  To start over:"
     echo "    sudo systemctl stop vault && sudo rm -rf /opt/vault/data && sudo systemctl start vault"
     exit 1
 fi
+
+# Reachable and uninitialized — proceed.
+INIT_OUT=$(vault operator init -key-shares=1 -key-threshold=1 -format=json)
+UNSEAL_KEY=$(echo "$INIT_OUT" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['unseal_keys_b64'][0])")
+ROOT_TOKEN=$(echo "$INIT_OUT" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['root_token'])")
+
+# Show the unseal key prominently. It is the operator's responsibility from
+# this point onward — we do NOT write it to disk.
+echo ""
+echo "╔═══════════════════════════════════════════════════════════════════════╗"
+echo "║                                                                       ║"
+echo "║   VAULT UNSEAL KEY  —  SAVE THIS NOW.  IT IS NOT WRITTEN TO DISK.     ║"
+echo "║                                                                       ║"
+printf  "║   %-67s ║\n" "$UNSEAL_KEY"
+echo "║                                                                       ║"
+echo "║   You will need it to unseal Vault after any reboot.                  ║"
+echo "║   Recovery command:  sudo /opt/unseal-vault.sh                        ║"
+echo "║                                                                       ║"
+echo "╚═══════════════════════════════════════════════════════════════════════╝"
+echo ""
+
+if [[ -r /dev/tty ]]; then
+    read -rp "  Press ENTER once you have saved the unseal key... " _ack < /dev/tty || true
+fi
+
+vault operator unseal "$UNSEAL_KEY" >/dev/null
+unset UNSEAL_KEY
 
 export VAULT_TOKEN="$ROOT_TOKEN"
 
