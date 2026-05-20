@@ -57,11 +57,14 @@ The provisioner prompts for everything upfront, then runs unattended:
   OpenWeatherMap API key   : <hidden>
   Configure custom domain? : [y/N]
   # if yes:
+  Domain (FQDN)            : app.example.com
   cPanel host              : <hidden>
   cPanel username          : <hidden>
   cPanel password          : <hidden>
   Email (Let's Encrypt)    : <hidden>
 ```
+
+You can pre-set `DOMAIN=…` (and optionally `DNS_ZONE=…` for multi-part TLDs like `.co.uk`) in the environment to skip the domain prompt entirely.
 
 What happens, in order:
 

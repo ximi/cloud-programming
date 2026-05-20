@@ -22,8 +22,8 @@ ZONE="${ZONE:-us-central1-a}"
 MACHINE_TYPE="${MACHINE_TYPE:-e2-micro}"
 IMAGE_FAMILY="${IMAGE_FAMILY:-ubuntu-2204-lts}"
 IMAGE_PROJECT="${IMAGE_PROJECT:-ubuntu-os-cloud}"
-DOMAIN="${DOMAIN:-exam.maximilianzimmer.com}"
-DNS_ZONE="${DNS_ZONE:-maximilianzimmer.com}"
+DOMAIN="${DOMAIN:-}"          # Prompted for when USE_DOMAIN=y, no hardcoded default.
+DNS_ZONE="${DNS_ZONE:-}"      # Derived from DOMAIN's last two labels if unset.
 REPO_RAW_URL="${REPO_RAW_URL:-https://raw.githubusercontent.com/ximi/cloud-programming/master}"
 
 log() { echo; echo "=== $* ==="; }
@@ -100,7 +100,7 @@ while true; do
 done
 
 echo ""
-read -rp "  Configure custom domain ($DOMAIN)? [y/N]: " _domain_answer < /dev/tty
+read -rp "  Configure a custom domain? [y/N]: " _domain_answer < /dev/tty
 USE_DOMAIN=false
 # Portable case-insensitive match — macOS still ships bash 3.2, where the
 # bash-4+ `${var,,}` lowercase expansion is a syntax error.
@@ -109,6 +109,19 @@ USE_DOMAIN=false
 CPANEL_HOST="" CPANEL_USER="" CPANEL_PASS="" CERTBOT_EMAIL=""
 if $USE_DOMAIN; then
     echo ""
+    # Domain prompt: skip if pre-set in env (DOMAIN=…). Loop until non-empty.
+    if [[ -z "$DOMAIN" ]]; then
+        while true; do
+            read -rp "  Domain (FQDN, e.g. app.example.com): " DOMAIN < /dev/tty
+            [[ -n "$DOMAIN" ]] && break
+            echo "  Domain cannot be empty."
+        done
+    fi
+    # Derive DNS_ZONE from DOMAIN's last two labels if not explicitly set.
+    # Works for app.example.com → example.com. For multi-part TLDs like
+    # .co.uk, pre-set DNS_ZONE=… in the env to override.
+    [[ -z "$DNS_ZONE" ]] && DNS_ZONE=$(echo "$DOMAIN" | awk -F. '{print $(NF-1)"."$NF}')
+
     read -rp  "  cPanel host     : " CPANEL_HOST    < /dev/tty; echo
     read -rp  "  cPanel username : " CPANEL_USER    < /dev/tty; echo
     read -rsp "  cPanel password : " CPANEL_PASS    < /dev/tty; echo
