@@ -12,6 +12,12 @@ export DEBIAN_FRONTEND=noninteractive
 # spam after every apt-get install is just noise.
 export NEEDRESTART_SUSPEND=1        # disable the hook entirely (needrestart >= 3.5)
 export NEEDRESTART_MODE=a           # fallback for older versions: auto, no prompts
+# Pin the locale to something Ubuntu always has, regardless of what the SSH
+# client forwarded. macOS ships LC_CTYPE=UTF-8 (no language prefix), which
+# isn't a valid locale name on Linux — perl, dpkg, certbot et al. all warn.
+export LC_ALL=C.UTF-8
+export LANG=C.UTF-8
+unset LC_CTYPE
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 

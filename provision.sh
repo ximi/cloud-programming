@@ -166,12 +166,12 @@ log "[3/4] Running bootstrap on VM"
     printf 'export USE_TAILSCALE=false\n'
     printf 'export EXTERNAL_HOST=%q\n' "$EXTERNAL_HOST_VALUE"
 } | gcloud compute ssh "$INSTANCE_NAME" --zone="$ZONE" \
-    --ssh-flag="-o StrictHostKeyChecking=no" \
+    --ssh-flag="-o StrictHostKeyChecking=no" --ssh-flag='-o SendEnv=-LC_*' \
     --command="cat > /tmp/exam_env.sh && chmod 600 /tmp/exam_env.sh"
 
 # Source the env, curl bootstrap.sh, and run as root with the env preserved.
 gcloud compute ssh "$INSTANCE_NAME" --zone="$ZONE" \
-    --ssh-flag="-o StrictHostKeyChecking=no" \
+    --ssh-flag="-o StrictHostKeyChecking=no" --ssh-flag='-o SendEnv=-LC_*' \
     --command="source /tmp/exam_env.sh && \
                curl -fsSL '${REPO_RAW_URL}/bootstrap.sh' \
                  | sudo --preserve-env=WEATHER_API_KEY,USE_TAILSCALE,EXTERNAL_HOST bash && \
@@ -218,7 +218,7 @@ if $USE_DOMAIN; then
     fi
 
     gcloud compute ssh "$INSTANCE_NAME" --zone="$ZONE" \
-        --ssh-flag="-o StrictHostKeyChecking=no" \
+        --ssh-flag="-o StrictHostKeyChecking=no" --ssh-flag='-o SendEnv=-LC_*' \
         --command="sudo apt-get install -y -qq certbot python3-certbot-nginx && \
                    sudo certbot --nginx -d ${DOMAIN} \
                        --non-interactive --agree-tos --email ${CERTBOT_EMAIL} && \
