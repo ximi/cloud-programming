@@ -263,11 +263,16 @@ if $USE_DOMAIN; then
         sleep 60
     fi
 
+    # Same noise suppression we apply inside setup.sh, but this is a separate
+    # SSH session so the env doesn't carry over from the bootstrap call.
     gcloud compute ssh "$INSTANCE_NAME" --zone="$ZONE" \
         --ssh-flag="-o StrictHostKeyChecking=no" --ssh-flag='-o SendEnv=-LC_*' \
-        --command="sudo apt-get install -y -qq certbot python3-certbot-nginx && \
-                   sudo certbot --nginx -d ${DOMAIN} \
-                       --non-interactive --agree-tos --email ${CERTBOT_EMAIL} && \
+        --command="export NEEDRESTART_SUSPEND=1 NEEDRESTART_MODE=a LC_ALL=C.UTF-8 LANG=C.UTF-8 && \
+                   sudo --preserve-env=NEEDRESTART_SUSPEND,NEEDRESTART_MODE,LC_ALL,LANG \
+                       apt-get install -y -qq certbot python3-certbot-nginx && \
+                   sudo --preserve-env=NEEDRESTART_SUSPEND,NEEDRESTART_MODE,LC_ALL,LANG \
+                       certbot --nginx -d ${DOMAIN} \
+                           --non-interactive --agree-tos --email ${CERTBOT_EMAIL} && \
                    sudo systemctl reload nginx"
     echo "  TLS certificate issued for $DOMAIN"
 fi
