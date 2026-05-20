@@ -4,12 +4,14 @@ Weather app with dress recommendations.
 API key retrieved from HashiCorp Vault at runtime — no hardcoded secrets.
 """
 
+import html
 import json
 import os
+import sys
 import urllib.request
 import urllib.parse
 import urllib.error
-from http.server import HTTPServer, BaseHTTPRequestHandler
+from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 
 VAULT_ADDR = os.environ.get("VAULT_ADDR", "http://127.0.0.1:8200")
 VAULT_TOKEN = os.environ.get("VAULT_TOKEN", "")
@@ -188,6 +190,9 @@ HTML_TEMPLATE = """<!DOCTYPE html>
 </html>"""
 
 
+DEFAULT_BG = "linear-gradient(135deg, #667eea, #764ba2)"
+
+
 def weather_content(city):
     try:
         secret = vault_get("secret/weather")
@@ -195,20 +200,29 @@ def weather_content(city):
         data = get_weather(city, api_key)
     except urllib.error.HTTPError as e:
         if e.code == 404:
-            return '<div class="error">🌍 City not found. Try again.</div>', "linear-gradient(135deg, #667eea, #764ba2)"
-        return f'<div class="error">Weather API error: {e.code}</div>', "linear-gradient(135deg, #667eea, #764ba2)"
+            return '<div class="error">🌍 City not found. Try again.</div>', DEFAULT_BG
+        # Log the actual error, show the user something generic — don't leak
+        # API internals or stack frames into the response body.
+        print(f"Weather API HTTPError: {e}", file=sys.stderr)
+        return '<div class="error">Weather service unavailable. Try again later.</div>', DEFAULT_BG
     except Exception as e:
-        return f'<div class="error">Error: {e}</div>', "linear-gradient(135deg, #667eea, #764ba2)"
+        print(f"Unexpected error fetching weather: {e!r}", file=sys.stderr)
+        return '<div class="error">Something went wrong. Try again later.</div>', DEFAULT_BG
 
     temp = data["main"]["temp"]
     feels_like = data["main"]["feels_like"]
     humidity = data["main"]["humidity"]
-    condition = data["weather"][0]["description"]
-    city_name = data["name"]
-    country = data["sys"]["country"]
     wind = data["wind"]["speed"]
 
-    outfit, reason = dress_advice(temp, condition)
+    # Keep the raw condition for dress_advice (keyword matching); escape the
+    # display copies of anything OpenWeatherMap hands us. The numeric fields
+    # don't need escaping — they're parsed as numbers by the JSON layer.
+    condition_raw = data["weather"][0]["description"]
+    condition = html.escape(condition_raw)
+    city_name = html.escape(data["name"])
+    country = html.escape(data["sys"]["country"])
+
+    outfit, reason = dress_advice(temp, condition_raw)
 
     # Background based on temperature
     if temp < 0:
@@ -251,13 +265,15 @@ class AppHandler(BaseHTTPRequestHandler):
         city = params.get("city", [DEFAULT_CITY])[0].strip() or DEFAULT_CITY
 
         content, bg = weather_content(city)
-        html = HTML_TEMPLATE.format(
+        # html.escape on city_input — without it, a search for `"><script>…`
+        # would break out of the value="…" attribute and execute.
+        page = HTML_TEMPLATE.format(
             bg=bg,
-            city_input=city if city != DEFAULT_CITY else "",
+            city_input=html.escape(city if city != DEFAULT_CITY else ""),
             content=content
         )
 
-        encoded = html.encode("utf-8")
+        encoded = page.encode("utf-8")
         self.send_response(200)
         self.send_header("Content-Type", "text/html; charset=utf-8")
         self.send_header("Content-Length", len(encoded))
@@ -270,4 +286,7 @@ if __name__ == "__main__":
         print("ERROR: VAULT_TOKEN environment variable not set.")
         raise SystemExit(1)
     print(f"App listening on http://127.0.0.1:5000 (default city: {DEFAULT_CITY})")
-    HTTPServer(("127.0.0.1", 5000), AppHandler).serve_forever()
+    # ThreadingHTTPServer handles requests concurrently — the previous
+    # single-threaded HTTPServer would serialize a slow weather-API request
+    # behind any other in-flight request.
+    ThreadingHTTPServer(("127.0.0.1", 5000), AppHandler).serve_forever()
