@@ -44,6 +44,29 @@ if $USE_TAILSCALE; then
     echo ""
 fi
 
+# ── Detect external host (domain if provided, else public IP) ─────────────────
+# Used for the self-signed cert SAN, Grafana root_url, Prometheus external-url,
+# and the access URLs printed in the summary. Caller can override with
+# EXTERNAL_HOST=... in the env (provision.sh passes the domain or VM public IP).
+if [[ -z "${EXTERNAL_HOST:-}" ]]; then
+    if $USE_TAILSCALE; then
+        EXTERNAL_HOST="exam.maximilianzimmer.com"
+    else
+        EXTERNAL_HOST=$(curl -fs --max-time 3 https://api4.my-ip.io/ip 2>/dev/null \
+            || curl -fs --max-time 3 -H "Metadata-Flavor: Google" \
+                  http://169.254.169.254/computeMetadata/v1/instance/network-interfaces/0/access-configs/0/external-ip 2>/dev/null \
+            || curl -fs --max-time 3 https://ifconfig.me/ip 2>/dev/null \
+            || hostname -I | awk '{print $1}')
+    fi
+fi
+echo "  External host: $EXTERNAL_HOST"
+
+if [[ "$EXTERNAL_HOST" =~ ^[0-9.]+$ ]]; then
+    CERT_SAN_TYPE="IP"
+else
+    CERT_SAN_TYPE="DNS"
+fi
+
 # ── [1/7] Install all packages ─────────────────────────────────────────────────
 log "[1/7] Installing packages"
 
@@ -130,39 +153,68 @@ if vault status 2>&1 | grep -q "Initialized.*false"; then
     INIT_OUT=$(vault operator init -key-shares=1 -key-threshold=1 -format=json)
     UNSEAL_KEY=$(echo "$INIT_OUT" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['unseal_keys_b64'][0])")
     ROOT_TOKEN=$(echo "$INIT_OUT" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['root_token'])")
-    printf '%s' "$UNSEAL_KEY" > /etc/vault.d/unseal.key
-    printf '%s' "$ROOT_TOKEN" > /etc/vault.d/root.token
-    chmod 600 /etc/vault.d/unseal.key /etc/vault.d/root.token
-    chown vault:vault /etc/vault.d/unseal.key /etc/vault.d/root.token
-else
-    UNSEAL_KEY=$(cat /etc/vault.d/unseal.key)
-    ROOT_TOKEN=$(cat /etc/vault.d/root.token)
-fi
 
-vault status 2>&1 | grep -q "Sealed.*true" && vault operator unseal "$UNSEAL_KEY"
+    # Show the unseal key prominently. It is the operator's responsibility from
+    # this point onward — we do NOT write it to disk.
+    echo ""
+    echo "╔═══════════════════════════════════════════════════════════════════════╗"
+    echo "║                                                                       ║"
+    echo "║   VAULT UNSEAL KEY  —  SAVE THIS NOW.  IT IS NOT WRITTEN TO DISK.     ║"
+    echo "║                                                                       ║"
+    printf  "║   %-67s ║\n" "$UNSEAL_KEY"
+    echo "║                                                                       ║"
+    echo "║   You will need it to unseal Vault after any reboot.                  ║"
+    echo "║   Recovery command:  sudo /opt/unseal-vault.sh                        ║"
+    echo "║                                                                       ║"
+    echo "╚═══════════════════════════════════════════════════════════════════════╝"
+    echo ""
+
+    if [[ -r /dev/tty ]]; then
+        read -rp "  Press ENTER once you have saved the unseal key... " _ack < /dev/tty || true
+    fi
+
+    vault operator unseal "$UNSEAL_KEY" >/dev/null
+    unset UNSEAL_KEY
+else
+    echo "ERROR: Vault is already initialized. This script expects a fresh Vault."
+    echo "  To start over:"
+    echo "    sudo systemctl stop vault && sudo rm -rf /opt/vault/data && sudo systemctl start vault"
+    exit 1
+fi
 
 export VAULT_TOKEN="$ROOT_TOKEN"
 
-# Auto-unseal service — runs on every boot so the app never breaks after a reboot
-cat > /etc/systemd/system/vault-unseal.service << 'EOF'
-[Unit]
-Description=Vault Auto-Unseal
-After=vault.service
-Requires=vault.service
+# Helper script for re-unsealing Vault after a reboot. The unseal key is not
+# persisted anywhere — the operator must enter it interactively.
+cat > /opt/unseal-vault.sh << 'UNSEALEOF'
+#!/usr/bin/env bash
+# Unseal Vault interactively after a reboot, then restart the dependent app.
+# Usage: sudo /opt/unseal-vault.sh
+set -euo pipefail
 
-[Service]
-Type=oneshot
-Environment=VAULT_ADDR=http://127.0.0.1:8200
-ExecStartPre=/bin/sleep 3
-ExecStart=/bin/sh -c 'vault status | grep -q "Sealed.*true" && vault operator unseal $(cat /etc/vault.d/unseal.key) || true'
-RemainAfterExit=yes
+export VAULT_ADDR="http://127.0.0.1:8200"
 
-[Install]
-WantedBy=multi-user.target
-EOF
+if [[ $EUID -ne 0 ]]; then
+    echo "Run as root: sudo /opt/unseal-vault.sh"; exit 1
+fi
 
-systemctl daemon-reload
-systemctl enable vault-unseal
+systemctl is-active --quiet vault || systemctl start vault
+sleep 2
+
+if vault status 2>&1 | grep -q "Sealed.*false"; then
+    echo "Vault is already unsealed."; exit 0
+fi
+
+read -rsp "Enter Vault unseal key: " UNSEAL_KEY
+echo
+vault operator unseal "$UNSEAL_KEY" >/dev/null
+unset UNSEAL_KEY
+
+systemctl restart webapp
+echo "Vault unsealed. webapp.service restarted."
+UNSEALEOF
+chmod 755 /opt/unseal-vault.sh
+
 vault secrets enable -path=secret kv 2>/dev/null || true
 
 vault kv put secret/weather \
@@ -193,10 +245,27 @@ APP_TOKEN=$(vault token create \
     -format=json \
     | python3 -c "import sys,json; print(json.load(sys.stdin)['auth']['client_token'])")
 
+# Same pattern for the DDNS updater — it only needs to read secret/cpanel.
+# We only create this token when the Tailscale/DDNS path is going to run.
+DDNS_TOKEN=""
+if $USE_TAILSCALE; then
+    vault policy write ddns-read - <<'POLICY'
+path "secret/cpanel" {
+  capabilities = ["read"]
+}
+POLICY
+    DDNS_TOKEN=$(vault token create \
+        -policy=ddns-read \
+        -ttl=8760h \
+        -renewable=true \
+        -format=json \
+        | python3 -c "import sys,json; print(json.load(sys.stdin)['auth']['client_token'])")
+fi
+
 # ── [3/7] Monitoring: units, prometheus config, start ──────────────────────────
 log "[3/7] Configuring monitoring stack"
 
-cat > /etc/systemd/system/prometheus.service << 'EOF'
+cat > /etc/systemd/system/prometheus.service <<EOF
 [Unit]
 Description=Prometheus Monitoring System
 After=network-online.target
@@ -206,15 +275,24 @@ Wants=network-online.target
 User=prometheus
 Group=prometheus
 Type=simple
-ExecStart=/usr/local/bin/prometheus \
-    --config.file=/etc/prometheus/prometheus.yml \
-    --storage.tsdb.path=/var/lib/prometheus/ \
-    --web.console.templates=/etc/prometheus/consoles \
-    --web.console.libraries=/etc/prometheus/console_libraries
+ExecStart=/usr/local/bin/prometheus \\
+    --config.file=/etc/prometheus/prometheus.yml \\
+    --storage.tsdb.path=/var/lib/prometheus/ \\
+    --web.console.templates=/etc/prometheus/consoles \\
+    --web.console.libraries=/etc/prometheus/console_libraries \\
+    --web.external-url=https://${EXTERNAL_HOST}/prometheus/
 Restart=on-failure
 
 [Install]
 WantedBy=multi-user.target
+EOF
+
+# Grafana sub-path config so it can be served as /grafana/ behind Nginx.
+mkdir -p /etc/systemd/system/grafana-server.service.d
+cat > /etc/systemd/system/grafana-server.service.d/override.conf <<EOF
+[Service]
+Environment=GF_SERVER_ROOT_URL=https://${EXTERNAL_HOST}/grafana/
+Environment=GF_SERVER_SERVE_FROM_SUB_PATH=true
 EOF
 
 cat > /etc/systemd/system/node_exporter.service << 'EOF'
@@ -250,10 +328,11 @@ EOF
 chown prometheus:prometheus /etc/prometheus/prometheus.yml
 
 systemctl daemon-reload
-systemctl enable --now node_exporter
-systemctl enable --now prometheus
-systemctl enable --now grafana-server
-sleep 3
+systemctl enable node_exporter prometheus grafana-server
+# Restart (not just start) so Grafana picks up the sub-path override even when
+# apt-get install grafana already auto-started it earlier in this script.
+systemctl restart node_exporter prometheus grafana-server
+sleep 5
 
 # ── [4/7] Web application: infrastructure ─────────────────────────────────────
 # This section sets up everything the app NEEDS (user, env file, systemd unit)
@@ -299,29 +378,24 @@ systemctl enable webapp
 # ── [5/7] Nginx: reverse proxy with TLS ───────────────────────────────────────
 log "[5/7] Configuring Nginx"
 
-LE_CERT="/etc/letsencrypt/live/exam.maximilianzimmer.com/fullchain.pem"
-LE_KEY="/etc/letsencrypt/live/exam.maximilianzimmer.com/privkey.pem"
+LE_CERT="/etc/letsencrypt/live/${EXTERNAL_HOST}/fullchain.pem"
+LE_KEY="/etc/letsencrypt/live/${EXTERNAL_HOST}/privkey.pem"
 SS_CERT="/etc/ssl/certs/exam-selfsigned.pem"
 SS_KEY="/etc/ssl/private/exam-selfsigned.key"
 
-if [ -f "$LE_CERT" ] && [ -f "$LE_KEY" ]; then
+# Use a Let's Encrypt cert only if one already exists for this host (a real
+# domain has been provisioned out-of-band). For an IP-only host we skip this
+# check entirely — LE doesn't issue for raw IPs.
+if [[ "$CERT_SAN_TYPE" == "DNS" ]] && [ -f "$LE_CERT" ] && [ -f "$LE_KEY" ]; then
     SSL_CERT="$LE_CERT"
     SSL_KEY="$LE_KEY"
-    echo "  Using Let's Encrypt certificate"
+    echo "  Using Let's Encrypt certificate for $EXTERNAL_HOST"
 else
-    echo "  Generating self-signed certificate..."
-    if $USE_TAILSCALE; then
-        CERT_CN="exam.maximilianzimmer.com"
-        CERT_SAN="DNS:exam.maximilianzimmer.com"
-    else
-        VM_IP=$(hostname -I | awk '{print $1}')
-        CERT_CN="$VM_IP"
-        CERT_SAN="IP:$VM_IP"
-    fi
+    echo "  Generating self-signed certificate for $EXTERNAL_HOST"
     openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
         -keyout "$SS_KEY" -out "$SS_CERT" \
-        -subj "/C=RO/ST=Sibiu/L=Sibiu/O=Exam/CN=${CERT_CN}" \
-        -addext "subjectAltName=${CERT_SAN}" 2>/dev/null
+        -subj "/C=RO/ST=Sibiu/L=Sibiu/O=Exam/CN=${EXTERNAL_HOST}" \
+        -addext "subjectAltName=${CERT_SAN_TYPE}:${EXTERNAL_HOST}" 2>/dev/null
     chmod 600 "$SS_KEY"
     SSL_CERT="$SS_CERT"
     SSL_KEY="$SS_KEY"
@@ -343,7 +417,9 @@ server {
     ssl_protocols       TLSv1.2 TLSv1.3;
     ssl_ciphers         HIGH:!aNULL:!MD5;
 
-    server_name _;
+    # Listed explicitly so \`certbot --nginx -d ${EXTERNAL_HOST}\` can find this
+    # block; \`_\` keeps it as the default for any other host header.
+    server_name ${EXTERNAL_HOST} _;
 
     location / {
         proxy_pass         http://127.0.0.1:5000;
@@ -354,8 +430,26 @@ server {
         proxy_set_header   X-Forwarded-Proto \$scheme;
     }
 
-    location /metrics {
-        deny all;
+    # Grafana — served at /grafana/ via sub-path config (see grafana-server override).
+    location /grafana/ {
+        proxy_pass         http://127.0.0.1:3000;
+        proxy_set_header   Host              \$host;
+        proxy_set_header   X-Real-IP         \$remote_addr;
+        proxy_set_header   X-Forwarded-For   \$proxy_add_x_forwarded_for;
+        proxy_set_header   X-Forwarded-Proto \$scheme;
+        # Grafana live updates use websockets.
+        proxy_http_version 1.1;
+        proxy_set_header   Upgrade           \$http_upgrade;
+        proxy_set_header   Connection        "upgrade";
+    }
+
+    # Prometheus — route-prefix derives from --web.external-url=/prometheus/.
+    location /prometheus/ {
+        proxy_pass         http://127.0.0.1:9090;
+        proxy_set_header   Host              \$host;
+        proxy_set_header   X-Real-IP         \$remote_addr;
+        proxy_set_header   X-Forwarded-For   \$proxy_add_x_forwarded_for;
+        proxy_set_header   X-Forwarded-Proto \$scheme;
     }
 }
 NGINXEOF
@@ -366,13 +460,13 @@ nginx -t && systemctl reload nginx
 log "[6/7] Configuring Grafana"
 sleep 5
 
-curl -sf -X POST http://admin:admin@localhost:3000/api/datasources \
+curl -sf -X POST http://admin:admin@localhost:3000/grafana/api/datasources \
   -H "Content-Type: application/json" \
   -d '{"name":"Prometheus","type":"prometheus","url":"http://localhost:9090","access":"proxy","isDefault":true}' \
   | python3 -c "import sys,json; d=json.load(sys.stdin); print('  Datasource:', d.get('message','ok'))" 2>/dev/null \
   || echo "  Datasource already exists"
 
-curl -sf -X POST http://admin:admin@localhost:3000/api/dashboards/db \
+curl -sf -X POST http://admin:admin@localhost:3000/grafana/api/dashboards/db \
   -H "Content-Type: application/json" \
   -d '{
     "dashboard": {
@@ -403,6 +497,21 @@ curl -sf -X POST http://admin:admin@localhost:3000/api/dashboards/db \
   }' | python3 -c "import sys,json; d=json.load(sys.stdin); print('  Dashboard:', d.get('status','?'), d.get('url',''))" 2>/dev/null \
   || echo "  Dashboard creation attempted"
 
+# Rotate the Grafana admin password off the default and stash the new one in
+# Vault. We do this AFTER the datasource/dashboard setup so those API calls can
+# still use admin/admin. Falls back to admin/admin if the rotation API errors.
+GRAFANA_PASS=$(openssl rand -base64 32 | tr -dc 'A-Za-z0-9' | head -c 24)
+if curl -sf -X PUT \
+    -H "Content-Type: application/json" \
+    -d "{\"oldPassword\":\"admin\",\"newPassword\":\"${GRAFANA_PASS}\",\"confirmNew\":\"${GRAFANA_PASS}\"}" \
+    http://admin:admin@localhost:3000/grafana/api/user/password >/dev/null; then
+    echo "  Grafana admin password rotated"
+else
+    echo "  Warning: Grafana password rotation failed — keeping admin/admin"
+    GRAFANA_PASS="admin"
+fi
+vault kv put secret/grafana username=admin password="$GRAFANA_PASS" >/dev/null
+
 # ── Application deployment ────────────────────────────────────────────────────
 # Delegate to the dedicated app deployment script — same process the operator
 # would use later to ship new versions of webapp.py.
@@ -422,19 +531,14 @@ if $USE_TAILSCALE; then
 
     if [ -n "$TAILSCALE_IP" ]; then
         echo "  Tailscale IP: ${TAILSCALE_IP}"
-        echo "  Updating DNS for exam.maximilianzimmer.com..."
+        echo "  Updating DNS for ${EXTERNAL_HOST}..."
 
-        VAULT_TOKEN="$ROOT_TOKEN" VAULT_ADDR="$VAULT_ADDR" \
+        # Use the least-privilege DDNS token, not the root token.
+        VAULT_TOKEN="$DDNS_TOKEN" VAULT_ADDR="$VAULT_ADDR" \
             python3 /opt/ddns-update.py
-
-        ACCESS_URL="https://exam.maximilianzimmer.com"
     else
         echo "  Warning: could not get Tailscale IP, DNS not updated"
-        ACCESS_URL="https://$(hostname -I | awk '{print $1}')"
     fi
-else
-    VM_IP=$(hostname -I | awk '{print $1}')
-    ACCESS_URL="https://${VM_IP}"
 fi
 
 # ── Summary ────────────────────────────────────────────────────────────────────
@@ -447,7 +551,10 @@ for svc in vault webapp nginx prometheus node_exporter grafana-server; do
     printf "│  %-20s │  %-29s│\n" "$svc" "$status"
 done
 echo "├──────────────────────┴───────────────────────────────┤"
-printf "│  %-52s │\n" "App:        ${ACCESS_URL}"
-printf "│  %-52s │\n" "Grafana:    http://$(hostname -I | awk '{print $1}'):3000  (admin/admin)"
-printf "│  %-52s │\n" "Prometheus: http://$(hostname -I | awk '{print $1}'):9090"
+printf "│  %-52s │\n" "App:        https://${EXTERNAL_HOST}"
+printf "│  %-52s │\n" "Grafana:    https://${EXTERNAL_HOST}/grafana/"
+printf "│  %-52s │\n" "  user: admin  pass: ${GRAFANA_PASS}"
+printf "│  %-52s │\n" "Prometheus: https://${EXTERNAL_HOST}/prometheus/"
+echo "├──────────────────────────────────────────────────────┤"
+printf "│  %-52s │\n" "Grafana password also stored in Vault: secret/grafana"
 echo "└──────────────────────────────────────────────────────┘"

@@ -28,6 +28,32 @@ REPO_RAW_URL="${REPO_RAW_URL:-https://raw.githubusercontent.com/ximi/cloud-progr
 
 log() { echo; echo "=== $* ==="; }
 
+# ── Failure handler ───────────────────────────────────────────────────────────
+# If provisioning fails after the VM is created, the VM keeps running (and
+# accruing cost). Warn the user with the exact delete command so they don't
+# have to dig it up. We deliberately do NOT auto-delete — that would destroy
+# debugging state if the user wants to SSH in and investigate.
+cleanup_on_failure() {
+    local exit_code=$?
+    [[ $exit_code -eq 0 ]] && return
+    gcloud compute instances describe "$INSTANCE_NAME" --zone="$ZONE" --quiet &>/dev/null || return
+
+    local ip
+    ip=$(gcloud compute instances describe "$INSTANCE_NAME" --zone="$ZONE" \
+        --format="value(networkInterfaces[0].accessConfigs[0].natIP)" 2>/dev/null || echo "?")
+
+    echo ""
+    echo "╔══════════════════════════════════════════════════════════════════════╗"
+    printf "║  PROVISIONING FAILED (exit %-3s)                                       ║\n" "$exit_code"
+    echo "╠══════════════════════════════════════════════════════════════════════╣"
+    printf "║  VM %s (%s) is still running and will accrue cost.\n" "$INSTANCE_NAME" "$ip"
+    echo "║"
+    printf "║  Delete:  gcloud compute instances delete %s --zone=%s --quiet\n" "$INSTANCE_NAME" "$ZONE"
+    printf "║  Debug:   gcloud compute ssh %s --zone=%s\n" "$INSTANCE_NAME" "$ZONE"
+    echo "╚══════════════════════════════════════════════════════════════════════╝"
+}
+trap cleanup_on_failure EXIT
+
 # ── Prerequisites ──────────────────────────────────────────────────────────────
 if ! command -v gcloud &>/dev/null; then
     echo "gcloud CLI not found. Install: https://cloud.google.com/sdk/docs/install"
@@ -101,22 +127,27 @@ VM_IP=$(gcloud compute instances describe "$INSTANCE_NAME" \
 echo "  Public IP: $VM_IP"
 
 # ── [2/4] Firewall ─────────────────────────────────────────────────────────────
-log "[2/4] Configuring firewall"
+# Grafana (:3000) and Prometheus (:9090) are proxied through Nginx on :443, so
+# we do NOT open them directly. Clean up any rules a previous version of this
+# script may have left behind.
+log "[2/4] Firewall"
 
-for rule_spec in "allow-exam-grafana:3000" "allow-exam-prometheus:9090"; do
-    rule_name="${rule_spec%%:*}"
-    port="${rule_spec##*:}"
-    if gcloud compute firewall-rules describe "$rule_name" --quiet &>/dev/null; then
-        echo "  Rule already exists: $rule_name"
-    else
-        gcloud compute firewall-rules create "$rule_name" \
-            --allow="tcp:${port}" \
-            --target-tags=exam-vm \
-            --source-ranges=0.0.0.0/0 \
-            --quiet
-        echo "  Created rule: $rule_name (port $port)"
+for stale_rule in allow-exam-grafana allow-exam-prometheus; do
+    if gcloud compute firewall-rules describe "$stale_rule" --quiet &>/dev/null; then
+        gcloud compute firewall-rules delete "$stale_rule" --quiet
+        echo "  Removed legacy rule: $stale_rule"
     fi
 done
+echo "  Only 80/443 are open (via the default http-server/https-server tags)."
+
+# Settle on the public hostname now — the domain if the operator chose one,
+# otherwise the VM's public IP. This is what setup_exam.sh will bake into the
+# cert SAN, Grafana root_url, Prometheus external-url, and the summary URLs.
+if $USE_DOMAIN; then
+    EXTERNAL_HOST_VALUE="$DOMAIN"
+else
+    EXTERNAL_HOST_VALUE="$VM_IP"
+fi
 
 # ── [3/4] Run bootstrap on the VM (pulls everything from GitHub) ──────────────
 log "[3/4] Running bootstrap on VM"
@@ -125,6 +156,7 @@ log "[3/4] Running bootstrap on VM"
 {
     printf 'export WEATHER_API_KEY=%q\n' "$WEATHER_API_KEY"
     printf 'export USE_TAILSCALE=false\n'
+    printf 'export EXTERNAL_HOST=%q\n' "$EXTERNAL_HOST_VALUE"
 } | gcloud compute ssh "$INSTANCE_NAME" --zone="$ZONE" \
     --ssh-flag="-o StrictHostKeyChecking=no" \
     --command="cat > /tmp/exam_env.sh && chmod 600 /tmp/exam_env.sh"
@@ -134,7 +166,7 @@ gcloud compute ssh "$INSTANCE_NAME" --zone="$ZONE" \
     --ssh-flag="-o StrictHostKeyChecking=no" \
     --command="source /tmp/exam_env.sh && \
                curl -fsSL '${REPO_RAW_URL}/bootstrap.sh' \
-                 | sudo --preserve-env=WEATHER_API_KEY,USE_TAILSCALE bash && \
+                 | sudo --preserve-env=WEATHER_API_KEY,USE_TAILSCALE,EXTERNAL_HOST bash && \
                rm -f /tmp/exam_env.sh"
 
 # ── [4/4] Domain: DNS update + TLS cert ───────────────────────────────────────
@@ -158,8 +190,24 @@ if $USE_DOMAIN; then
     fi
     unset CPANEL_PASS AUTH
 
-    echo "  Waiting 60s for DNS to propagate..."
-    sleep 60
+    # Poll public DNS until it returns the right IP, instead of guessing with
+    # a fixed sleep. dig isn't always installed (no Windows, minimal Linux), so
+    # we fall back to the old sleep if it's missing.
+    if command -v dig &>/dev/null; then
+        echo "  Polling DNS for $DOMAIN -> $VM_IP (up to 180s)..."
+        for i in $(seq 1 60); do
+            resolved=$(dig +short +time=2 +tries=1 "$DOMAIN" @8.8.8.8 2>/dev/null | tail -1)
+            if [[ "$resolved" == "$VM_IP" ]]; then
+                echo "  DNS resolved after $((i * 3))s"
+                break
+            fi
+            sleep 3
+        done
+        [[ "${resolved:-}" != "$VM_IP" ]] && echo "  Warning: DNS not yet propagated (saw '${resolved:-}'), continuing — certbot may still succeed via authoritative lookup"
+    else
+        echo "  dig not installed, sleeping 60s for DNS propagation"
+        sleep 60
+    fi
 
     gcloud compute ssh "$INSTANCE_NAME" --zone="$ZONE" \
         --ssh-flag="-o StrictHostKeyChecking=no" \
@@ -171,17 +219,15 @@ if $USE_DOMAIN; then
 fi
 
 # ── Summary ────────────────────────────────────────────────────────────────────
-if $USE_DOMAIN; then
-    APP_URL="https://${DOMAIN}"
-else
-    APP_URL="https://${VM_IP}  (self-signed cert)"
-fi
+BASE="https://${EXTERNAL_HOST_VALUE}"
+CERT_NOTE=""
+$USE_DOMAIN || CERT_NOTE="  (self-signed cert)"
 
 echo ""
-echo "┌──────────────────────────────────────────────────┐"
-echo "│  PROVISIONING COMPLETE                           │"
-echo "├──────────────────────────────────────────────────┤"
-printf "│  App       : %-35s │\n" "$APP_URL"
-printf "│  Grafana   : %-35s │\n" "http://${VM_IP}:3000  (admin/admin)"
-printf "│  Prometheus: %-35s │\n" "http://${VM_IP}:9090"
-echo "└──────────────────────────────────────────────────┘"
+echo "┌──────────────────────────────────────────────────────┐"
+echo "│  PROVISIONING COMPLETE                               │"
+echo "├──────────────────────────────────────────────────────┤"
+printf "│  App       : %-39s │\n" "${BASE}${CERT_NOTE}"
+printf "│  Grafana   : %-39s │\n" "${BASE}/grafana/  (see setup output for pw)"
+printf "│  Prometheus: %-39s │\n" "${BASE}/prometheus/"
+echo "└──────────────────────────────────────────────────────┘"

@@ -24,7 +24,7 @@ If you also want VM creation automated, run this on any laptop with `gcloud` aut
 curl -fsSL https://raw.githubusercontent.com/ximi/cloud-programming/master/provision.sh | bash
 ```
 
-This creates an `e2-micro` GCP VM, opens firewall rules, and triggers `bootstrap.sh` on the VM (which pulls everything from GitHub and runs `setup_exam.sh`). Single command, single source of truth.
+This creates an `e2-micro` GCP VM (with the default `http-server`/`https-server` tags so :80 and :443 are open), then triggers `bootstrap.sh` on the VM, which pulls everything from GitHub and runs `setup_exam.sh`. Single command, single source of truth.
 
 Prereqs once per laptop: `gcloud auth login` and `gcloud config set project <project-id>` — authentication, not deployment.
 
@@ -56,12 +56,11 @@ bash provision.sh
 ```
 
 What happens, in order:
-1. Creates an `e2-micro` VM in `us-central1-a` (GCP always-free tier).
-2. Opens firewall ports 3000 (Grafana) and 9090 (Prometheus). Ports 80/443 use the default GCP `http-server`/`https-server` tag rules.
-3. Tars up `setup_exam.sh`, `deploy_app.sh`, `webapp.py`, `ddns-update.py` and uploads them to `/tmp/exam/` on the VM.
-4. Runs `setup_exam.sh` with `sudo`, non-interactively, with the OpenWeatherMap API key passed via env file.
-5. `setup_exam.sh` ends by calling `deploy_app.sh`, which deploys the application.
-6. (Optional) updates the DNS A record via cPanel API and issues a Let's Encrypt cert with certbot.
+1. Creates an `e2-micro` VM in `us-central1-a` (GCP always-free tier). Only :80 and :443 are open externally (via the default `http-server`/`https-server` tags); Grafana and Prometheus are reached through Nginx, not their own ports.
+2. SSHes in and writes a temporary env file containing the OpenWeatherMap API key and the resolved external host (the custom domain if configured, otherwise the VM's public IP).
+3. Curl-pipes `bootstrap.sh` on the VM, which downloads the rest of the repo and runs `setup_exam.sh` with `sudo --preserve-env`.
+4. `setup_exam.sh` initialises Vault, **prints the unseal key once** (it is not stored on disk — see the reboot note below), provisions Prometheus, Grafana, Nginx, and the systemd units, then calls `deploy_app.sh`.
+5. (Optional) updates the DNS A record via cPanel API and issues a Let's Encrypt cert with certbot.
 
 The provisioner prompts for everything upfront, then runs unattended:
 
@@ -118,19 +117,45 @@ REVIEW.md           Code review notes (development artefact — can be ignored b
 
 ## Access
 
+All HTTP traffic enters the VM through Nginx on `:443`. Grafana and Prometheus are served as sub-paths of the same hostname, not on their own ports.
+
 | Service | URL |
 |---|---|
-| Application | `https://exam.maximilianzimmer.com` or `https://<VM-IP>` (self-signed cert) |
-| Grafana | `http://<VM-IP>:3000` — admin / admin |
-| Prometheus | `http://<VM-IP>:9090` |
-| Vault UI | `http://127.0.0.1:8200/ui` — internal only, not exposed |
+| Application | `https://<host>` |
+| Grafana | `https://<host>/grafana/` — user `admin`, password printed at the end of setup |
+| Prometheus | `https://<host>/prometheus/` |
+| Vault UI | `http://127.0.0.1:8200/ui` — bound to localhost, not exposed externally |
+
+`<host>` is whatever the operator chose: the custom domain (if configured) or the VM's public IP. The cert SAN matches that host.
+
+The Grafana password is rotated off the default `admin/admin` during setup and stored in Vault at `secret/grafana`. To retrieve it after the fact (Vault must be unsealed):
+
+```bash
+VAULT_ADDR=http://127.0.0.1:8200 VAULT_TOKEN=<a-token-with-read-on-secret/grafana> \
+    vault kv get secret/grafana
+```
+
+## After a reboot — unseal Vault
+
+The unseal key is **not** stored on disk. After any reboot you need to bring Vault (and therefore the webapp) back online:
+
+```bash
+sudo /opt/unseal-vault.sh
+```
+
+The helper prompts for the unseal key, runs `vault operator unseal`, and restarts `webapp.service`. The key was printed once at the end of `setup_exam.sh` — save it somewhere safe.
 
 ## Security notes
 
 - **No secrets in source files.** `webapp.py` and `ddns-update.py` retrieve all credentials from Vault at runtime via the HTTP API.
-- **Least-privilege Vault token.** The application does **not** hold the root token. `setup_exam.sh` writes a Vault policy `app-read` (read-only access to `secret/weather`) and issues a renewable token bound to that policy. That token is what `/etc/webapp.env` contains.
-- **Injection via systemd EnvironmentFile.** `/etc/webapp.env` is mode 600, owned by `appuser`, and loaded by systemd at service start — never read by the app source.
+- **Least-privilege Vault tokens.** The application does **not** hold the root token. `setup_exam.sh` writes:
+  - an `app-read` policy (read-only on `secret/weather`) and issues a renewable token for the webapp
+  - a `ddns-read` policy (read-only on `secret/cpanel`) and issues a separate token for the DDNS updater
+  
+  The root token only lives in shell memory during setup and is never persisted.
+- **Unseal key is never written to disk.** It is shown once at setup, then the operator's responsibility. Re-unseal after reboot via `sudo /opt/unseal-vault.sh`.
+- **Grafana admin password is rotated.** The default `admin/admin` is changed during provisioning to a 24-char random string, written to Vault at `secret/grafana`, and printed once in the setup summary.
+- **Injection via systemd EnvironmentFile.** `/etc/webapp.env` is mode 600, owned by `appuser`, loaded by systemd at service start — never read by the app source.
 - **Vault on localhost only.** Vault listens on `127.0.0.1:8200`; the app reaches it directly, the outside world cannot.
-- **Auto-unseal on reboot.** A `vault-unseal.service` systemd unit re-unseals Vault after every reboot so the app keeps working unattended. The unseal key is stored mode 600, owned by `vault` — this is a documented production trade-off, acceptable in this exam environment.
-- **Reverse proxy is the sole entry point to the application.** The app binds to `127.0.0.1:5000` and is only reachable via Nginx on `:443`. Direct port access to `:5000` from outside the VM is impossible.
+- **Nginx is the sole entry point.** The app binds to `127.0.0.1:5000`, Grafana to `127.0.0.1:3000`, Prometheus to `127.0.0.1:9090`. All three are reachable only via Nginx on `:443`. The only ports open to the internet are `:80` (redirect → `:443`) and `:443`.
 - **No credentials in shell history.** All interactive prompts use `read -rsp` and variables are `unset` once consumed.
