@@ -1,7 +1,17 @@
 #!/usr/bin/env python3
 """
-Dynamic DNS updater for exam.maximilianzimmer.com via cPanel API.
+Dynamic DNS updater via the cPanel API.
 Reads cPanel credentials from Vault at runtime — no hardcoded secrets.
+
+Environment:
+  VAULT_ADDR, VAULT_TOKEN    Vault location + a token with read on secret/cpanel
+  DDNS_DOMAIN (required)     The FQDN whose A record to maintain (e.g. exam.example.com)
+  DDNS_ZONE (optional)       The parent zone for cPanel. Defaults to the last
+                             two labels of DDNS_DOMAIN.
+
+Usage:
+  ddns-update.py [target_ip]
+  If target_ip is omitted, the script auto-detects this host's public IP.
 """
 
 import json
@@ -14,8 +24,10 @@ import base64
 
 VAULT_ADDR = os.environ.get("VAULT_ADDR", "http://127.0.0.1:8200")
 VAULT_TOKEN = os.environ.get("VAULT_TOKEN", "")
-SUBDOMAIN = "exam.maximilianzimmer.com"
-ZONE = "maximilianzimmer.com"
+SUBDOMAIN = os.environ.get("DDNS_DOMAIN", "").rstrip(".")
+ZONE = os.environ.get("DDNS_ZONE") or (
+    ".".join(SUBDOMAIN.split(".")[-2:]) if SUBDOMAIN else ""
+)
 
 
 def get_public_ip():
@@ -89,6 +101,9 @@ def add_dns(host, username, password, new_ip):
 def main():
     if not VAULT_TOKEN:
         print("ERROR: VAULT_TOKEN not set", file=sys.stderr)
+        sys.exit(1)
+    if not SUBDOMAIN:
+        print("ERROR: DDNS_DOMAIN env var not set (the FQDN whose A record to maintain)", file=sys.stderr)
         sys.exit(1)
 
     creds = vault_get("secret/cpanel")

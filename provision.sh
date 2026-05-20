@@ -76,7 +76,7 @@ fi
 # (where stdin is the pipe, not the terminal).
 echo ""
 echo "┌─────────────────────────────────────────────────┐"
-echo "│         GCP Exam Environment Provisioner        │"
+echo "│            GCP Environment Provisioner          │"
 echo "└─────────────────────────────────────────────────┘"
 echo ""
 echo "  Project : $PROJECT"
