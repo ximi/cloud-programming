@@ -52,12 +52,53 @@ if [[ -z "${EXTERNAL_HOST:-}" ]]; then
     if $USE_TAILSCALE; then
         EXTERNAL_HOST="exam.maximilianzimmer.com"
     else
-        EXTERNAL_HOST=$(curl -fs --max-time 3 https://api4.my-ip.io/ip 2>/dev/null \
-            || curl -fs --max-time 3 -H "Metadata-Flavor: Google" \
-                  http://169.254.169.254/computeMetadata/v1/instance/network-interfaces/0/access-configs/0/external-ip 2>/dev/null \
-            || curl -fs --max-time 3 https://ifconfig.me/ip 2>/dev/null \
-            || hostname -I | awk '{print $1}')
+        # Each step is validated for non-empty output — a previous version
+        # used a `||` chain that accepted exit-0-with-empty-body responses
+        # (api4.my-ip.io does this sometimes) and short-circuited the rest.
+
+        # 1. GCP metadata (1s connect timeout fails fast on non-cloud VMs).
+        EXTERNAL_HOST=$(curl -fs --max-time 2 --connect-timeout 1 \
+            -H 'Metadata-Flavor: Google' \
+            http://169.254.169.254/computeMetadata/v1/instance/network-interfaces/0/access-configs/0/external-ip \
+            2>/dev/null || true)
+
+        # 2. AWS / Azure / DigitalOcean metadata (same link-local address).
+        if [[ -z "$EXTERNAL_HOST" ]]; then
+            EXTERNAL_HOST=$(curl -fs --max-time 2 --connect-timeout 1 \
+                http://169.254.169.254/latest/meta-data/public-ipv4 \
+                2>/dev/null || true)
+        fi
+
+        # 3. First non-loopback IPv4 on a real interface — the LAN address
+        #    a browser on the same network would use. Correct default for
+        #    local/NAT'd VMs.
+        if [[ -z "$EXTERNAL_HOST" ]]; then
+            EXTERNAL_HOST=$(ip -4 -o addr show scope global 2>/dev/null \
+                | awk '{print $4}' | cut -d/ -f1 | head -1)
+        fi
+
+        # 4. Public-IP echo as a last resort. Forced to IPv4 (-4) so the
+        #    service doesn't return the box's public IPv6, which is rarely
+        #    what you want as a cert SAN.
+        if [[ -z "$EXTERNAL_HOST" ]]; then
+            EXTERNAL_HOST=$(curl -fs --max-time 3 -4 https://ifconfig.me/ip 2>/dev/null || true)
+            [[ -z "$EXTERNAL_HOST" ]] && EXTERNAL_HOST=$(curl -fs --max-time 3 -4 https://api.ipify.org 2>/dev/null || true)
+        fi
     fi
+fi
+
+# Final fallback for the friendly path: prompt if all four came up empty.
+if [[ -z "$EXTERNAL_HOST" ]] && [[ -r /dev/tty ]]; then
+    echo "  Could not auto-detect external host."
+    read -rp "  Enter the address you'll use to reach this VM (IP or hostname): " EXTERNAL_HOST < /dev/tty
+fi
+
+if [[ -z "$EXTERNAL_HOST" ]]; then
+    echo "ERROR: External host is required."
+    echo "  Auto-detection failed and no TTY was available to prompt."
+    echo "  Re-run with an explicit value, e.g.:"
+    echo "    curl … | sudo EXTERNAL_HOST=192.168.1.50 bash"
+    exit 1
 fi
 echo "  External host: $EXTERNAL_HOST"
 
@@ -416,7 +457,7 @@ else
     openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
         -keyout "$SS_KEY" -out "$SS_CERT" \
         -subj "/C=RO/ST=Sibiu/L=Sibiu/O=Exam/CN=${EXTERNAL_HOST}" \
-        -addext "subjectAltName=${CERT_SAN_TYPE}:${EXTERNAL_HOST}" 2>/dev/null
+        -addext "subjectAltName=${CERT_SAN_TYPE}:${EXTERNAL_HOST}"
     chmod 600 "$SS_KEY"
     SSL_CERT="$SS_CERT"
     SSL_KEY="$SS_KEY"

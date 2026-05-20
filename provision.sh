@@ -124,6 +124,12 @@ fi
 VM_IP=$(gcloud compute instances describe "$INSTANCE_NAME" \
     --zone="$ZONE" \
     --format="value(networkInterfaces[0].accessConfigs[0].natIP)")
+
+if [[ -z "$VM_IP" ]]; then
+    echo "ERROR: VM exists but has no external IP attached. Inspect with:"
+    echo "  gcloud compute instances describe $INSTANCE_NAME --zone=$ZONE"
+    exit 1
+fi
 echo "  Public IP: $VM_IP"
 
 # ── [2/4] Firewall ─────────────────────────────────────────────────────────────
