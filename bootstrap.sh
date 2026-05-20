@@ -10,8 +10,8 @@
 
 set -euo pipefail
 
-REPO_TARBALL="https://github.com/ximi/cloud-programming/archive/refs/heads/main.tar.gz"
-WORK_DIR="/tmp/cloud-programming-deploy"
+REPO_TARBALL="${REPO_TARBALL:-https://github.com/ximi/cloud-programming/archive/refs/heads/main.tar.gz}"
+WORK_DIR="${WORK_DIR:-/tmp/cloud-programming-deploy}"
 
 if [[ $EUID -ne 0 ]]; then
     echo "bootstrap.sh must run as root."

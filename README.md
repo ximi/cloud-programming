@@ -18,13 +18,15 @@ That is the **only** command. `bootstrap.sh` downloads the rest of the repo as a
 
 ### Creating a fresh VM from scratch (GCP)
 
-If you also want VM creation automated (single command from a laptop with `gcloud` already authenticated):
+If you also want VM creation automated, run this on any laptop with `gcloud` authenticated — no local repo clone required:
 
 ```bash
-bash provision.sh
+curl -fsSL https://raw.githubusercontent.com/ximi/cloud-programming/main/provision.sh | bash
 ```
 
-This creates an `e2-micro` GCP VM and runs the full deployment on it. Prereqs (once per laptop): `gcloud auth login` and `gcloud config set project <project-id>` — authentication, not deployment.
+This creates an `e2-micro` GCP VM, opens firewall rules, and triggers `bootstrap.sh` on the VM (which pulls everything from GitHub and runs `setup_exam.sh`). Single command, single source of truth.
+
+Prereqs once per laptop: `gcloud auth login` and `gcloud config set project <project-id>` — authentication, not deployment.
 
 ## Stack
 

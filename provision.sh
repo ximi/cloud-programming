@@ -1,16 +1,30 @@
 #!/usr/bin/env bash
-# Provision a free-tier GCP VM and run setup_exam.sh on it.
-# Usage: bash provision.sh
+# Provision a free-tier GCP VM and deploy the full stack onto it.
+#
+# Runs from ANY computer with `gcloud` installed and authenticated. The VM
+# itself pulls all deployment scripts from GitHub via bootstrap.sh, so this
+# script needs no local files.
+#
+# Usage (from a local clone):
+#   bash provision.sh
+#
+# Usage (from anywhere, no clone needed):
+#   curl -fsSL https://raw.githubusercontent.com/ximi/cloud-programming/main/provision.sh | bash
+#
+# Prerequisites (one-time per laptop):
+#   gcloud auth login
+#   gcloud config set project YOUR_PROJECT_ID
+
 set -euo pipefail
 
-INSTANCE_NAME="exam-vm"
-ZONE="us-central1-a"
-MACHINE_TYPE="e2-micro"
-IMAGE_FAMILY="ubuntu-2204-lts"
-IMAGE_PROJECT="ubuntu-os-cloud"
-DOMAIN="exam.maximilianzimmer.com"
-DNS_ZONE="maximilianzimmer.com"
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+INSTANCE_NAME="${INSTANCE_NAME:-exam-vm}"
+ZONE="${ZONE:-us-central1-a}"
+MACHINE_TYPE="${MACHINE_TYPE:-e2-micro}"
+IMAGE_FAMILY="${IMAGE_FAMILY:-ubuntu-2204-lts}"
+IMAGE_PROJECT="${IMAGE_PROJECT:-ubuntu-os-cloud}"
+DOMAIN="${DOMAIN:-exam.maximilianzimmer.com}"
+DNS_ZONE="${DNS_ZONE:-maximilianzimmer.com}"
+REPO_RAW_URL="${REPO_RAW_URL:-https://raw.githubusercontent.com/ximi/cloud-programming/main}"
 
 log() { echo; echo "=== $* ==="; }
 
@@ -32,6 +46,8 @@ if ! gcloud auth list --filter=status:ACTIVE --format="value(account)" 2>/dev/nu
 fi
 
 # ── Collect credentials ────────────────────────────────────────────────────────
+# Read from /dev/tty so this script works when invoked via `curl ... | bash`
+# (where stdin is the pipe, not the terminal).
 echo ""
 echo "┌─────────────────────────────────────────────────┐"
 echo "│         GCP Exam Environment Provisioner        │"
@@ -43,27 +59,27 @@ echo "  Machine : $MACHINE_TYPE  (always-free tier)"
 echo ""
 
 while true; do
-    read -rsp "  OpenWeatherMap API key: " WEATHER_API_KEY; echo
+    read -rsp "  OpenWeatherMap API key: " WEATHER_API_KEY < /dev/tty; echo
     [[ -n "$WEATHER_API_KEY" ]] && break
     echo "  API key cannot be empty."
 done
 
 echo ""
-read -rp "  Configure custom domain ($DOMAIN)? [y/N]: " _domain_answer
+read -rp "  Configure custom domain ($DOMAIN)? [y/N]: " _domain_answer < /dev/tty
 USE_DOMAIN=false
 [[ "${_domain_answer,,}" =~ ^y(es)?$ ]] && USE_DOMAIN=true
 
 CPANEL_HOST="" CPANEL_USER="" CPANEL_PASS="" CERTBOT_EMAIL=""
 if $USE_DOMAIN; then
     echo ""
-    read -rp  "  cPanel host     : " CPANEL_HOST; echo
-    read -rp  "  cPanel username : " CPANEL_USER; echo
-    read -rsp "  cPanel password : " CPANEL_PASS; echo
-    read -rp  "  Email (certbot) : " CERTBOT_EMAIL; echo
+    read -rp  "  cPanel host     : " CPANEL_HOST    < /dev/tty; echo
+    read -rp  "  cPanel username : " CPANEL_USER    < /dev/tty; echo
+    read -rsp "  cPanel password : " CPANEL_PASS    < /dev/tty; echo
+    read -rp  "  Email (certbot) : " CERTBOT_EMAIL  < /dev/tty; echo
 fi
 
-# ── [1/3] Create VM ────────────────────────────────────────────────────────────
-log "[1/3] Creating VM"
+# ── [1/4] Create VM ────────────────────────────────────────────────────────────
+log "[1/4] Creating VM"
 
 if gcloud compute instances describe "$INSTANCE_NAME" --zone="$ZONE" --quiet &>/dev/null; then
     echo "  Instance already exists, reusing"
@@ -84,8 +100,8 @@ VM_IP=$(gcloud compute instances describe "$INSTANCE_NAME" \
     --format="value(networkInterfaces[0].accessConfigs[0].natIP)")
 echo "  Public IP: $VM_IP"
 
-# ── [2/3] Firewall ─────────────────────────────────────────────────────────────
-log "[2/3] Configuring firewall"
+# ── [2/4] Firewall ─────────────────────────────────────────────────────────────
+log "[2/4] Configuring firewall"
 
 for rule_spec in "allow-exam-grafana:3000" "allow-exam-prometheus:9090"; do
     rule_name="${rule_spec%%:*}"
@@ -102,17 +118,10 @@ for rule_spec in "allow-exam-grafana:3000" "allow-exam-prometheus:9090"; do
     fi
 done
 
-# ── [3/4] Upload files and run setup ──────────────────────────────────────────
-log "[3/4] Uploading files and running setup"
+# ── [3/4] Run bootstrap on the VM (pulls everything from GitHub) ──────────────
+log "[3/4] Running bootstrap on VM"
 
-# Stream a tar of all deployment files in one SSH connection. This keeps the
-# files together on the VM so setup_exam.sh's SCRIPT_DIR resolves correctly and
-# deploy_app.sh / webapp.py / ddns-update.py are all reachable from it.
-tar -cz -C "$SCRIPT_DIR" setup_exam.sh deploy_app.sh webapp.py ddns-update.py \
-  | gcloud compute ssh "$INSTANCE_NAME" --zone="$ZONE" \
-    --ssh-flag="-o StrictHostKeyChecking=no" \
-    --command="mkdir -p /tmp/exam && tar -xz -C /tmp/exam && chmod +x /tmp/exam/*.sh"
-
+# Pass the API key non-interactively via a temporary env file on the VM.
 {
     printf 'export WEATHER_API_KEY=%q\n' "$WEATHER_API_KEY"
     printf 'export USE_TAILSCALE=false\n'
@@ -120,15 +129,18 @@ tar -cz -C "$SCRIPT_DIR" setup_exam.sh deploy_app.sh webapp.py ddns-update.py \
     --ssh-flag="-o StrictHostKeyChecking=no" \
     --command="cat > /tmp/exam_env.sh && chmod 600 /tmp/exam_env.sh"
 
+# Source the env, curl bootstrap.sh, and run as root with the env preserved.
 gcloud compute ssh "$INSTANCE_NAME" --zone="$ZONE" \
     --ssh-flag="-o StrictHostKeyChecking=no" \
-    --command="set -a; source /tmp/exam_env.sh; set +a; sudo -E bash /tmp/exam/setup_exam.sh; rm -f /tmp/exam_env.sh"
+    --command="source /tmp/exam_env.sh && \
+               curl -fsSL '${REPO_RAW_URL}/bootstrap.sh' \
+                 | sudo --preserve-env=WEATHER_API_KEY,USE_TAILSCALE bash && \
+               rm -f /tmp/exam_env.sh"
 
 # ── [4/4] Domain: DNS update + TLS cert ───────────────────────────────────────
 if $USE_DOMAIN; then
     log "[4/4] Configuring domain"
 
-    # Update DNS A record via cPanel API
     AUTH=$(printf '%s:%s' "$CPANEL_USER" "$CPANEL_PASS" | base64)
     FETCH=$(curl -sf -H "Authorization: Basic $AUTH" \
         "${CPANEL_HOST}/json-api/cpanel?cpanel_jsonapi_module=ZoneEdit&cpanel_jsonapi_func=fetchzone_records&domain=${DNS_ZONE}&type=A&name=${DOMAIN}.")
@@ -146,7 +158,6 @@ if $USE_DOMAIN; then
     fi
     unset CPANEL_PASS AUTH
 
-    # Wait for DNS propagation then get a Let's Encrypt cert
     echo "  Waiting 60s for DNS to propagate..."
     sleep 60
 
