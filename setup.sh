@@ -120,6 +120,28 @@ else
     CERT_SAN_TYPE="DNS"
 fi
 
+# ── Ensure swap ───────────────────────────────────────────────────────────────
+# The full stack (Vault + Prometheus + Grafana + node_exporter + Nginx + the
+# webapp) plus apt during install is enough to push a 1 GB e2-micro over the
+# OOM line. A 2 GB swap file gives the kernel somewhere to spill cold pages so
+# brief memory spikes don't kill long-running processes. Idempotent: skipped
+# if any swap is already configured (e.g. on machines with larger plans).
+if [[ $(swapon --show --noheadings 2>/dev/null | wc -l) -eq 0 ]]; then
+    log "Creating 2 GB swap file at /swapfile"
+    fallocate -l 2G /swapfile 2>/dev/null \
+        || dd if=/dev/zero of=/swapfile bs=1M count=2048 status=none
+    chmod 600 /swapfile
+    mkswap /swapfile >/dev/null
+    swapon /swapfile
+    grep -q '^/swapfile' /etc/fstab || echo '/swapfile none swap sw 0 0' >> /etc/fstab
+    # Don't lean on swap too eagerly — only when RAM is genuinely under
+    # pressure. Default of 60 is desktop-tuned; lower is better for a server.
+    sysctl -w vm.swappiness=10 >/dev/null
+    grep -q '^vm.swappiness' /etc/sysctl.conf || echo 'vm.swappiness=10' >> /etc/sysctl.conf
+else
+    echo "  Swap already configured, skipping"
+fi
+
 # ── [1/7] Install all packages ─────────────────────────────────────────────────
 log "[1/7] Installing packages"
 

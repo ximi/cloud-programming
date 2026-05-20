@@ -175,7 +175,35 @@ else
     EXTERNAL_HOST_VALUE="$VM_IP"
 fi
 
-# ── [3/4] Run bootstrap on the VM (pulls everything from GitHub) ──────────────
+# ── [3/4] Wait for SSH, then run bootstrap on the VM ──────────────────────────
+log "[3/4] Waiting for SSH to come up"
+
+# gcloud uploads the SSH key to instance metadata; the VM's osconfig-agent has
+# to pull it into ~/.ssh/authorized_keys before logins work. On a fresh e2-micro
+# that propagation usually takes 30-60s but can be slower on first-ever runs in
+# a project (gcloud creates a key, uploads it, the agent installs it). Cap each
+# attempt at 5s so a slow VM doesn't make the wait itself hang.
+SSH_RETRIES=60   # 60 × (5s sleep + ≤5s connect) → up to ~10 min worst case
+echo "  Polling SSH (each attempt caps at 5s; status update every 30s)..."
+for i in $(seq 1 $SSH_RETRIES); do
+    if gcloud compute ssh "$INSTANCE_NAME" --zone="$ZONE" \
+        --ssh-flag="-o ConnectTimeout=5" \
+        --ssh-flag="-o StrictHostKeyChecking=no" \
+        --ssh-flag='-o SendEnv=-LC_*' \
+        --command="true" &>/dev/null; then
+        echo "  SSH ready (after ~$((i * 5))s)"
+        break
+    fi
+    # Heartbeat every 6 attempts (~30s) so the user knows it's still working.
+    (( i % 6 == 0 )) && echo "  ...still waiting (~$((i * 5))s elapsed, attempt $i/$SSH_RETRIES)"
+    [[ $i -eq $SSH_RETRIES ]] && {
+        echo "ERROR: VM still not accepting SSH after $((SSH_RETRIES * 5))s"
+        echo "  Try \`gcloud compute ssh $INSTANCE_NAME --zone=$ZONE\` manually to see why."
+        exit 1
+    }
+    sleep 5
+done
+
 log "[3/4] Running bootstrap on VM"
 
 # Pass the API key non-interactively via a temporary env file on the VM.
