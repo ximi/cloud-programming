@@ -206,23 +206,35 @@ log "[3/4] Waiting for SSH to come up"
 # a project (gcloud creates a key, uploads it, the agent installs it). Cap each
 # attempt at 5s so a slow VM doesn't make the wait itself hang.
 SSH_RETRIES=60   # 60 × (5s sleep + ≤5s connect) → up to ~10 min worst case
+SSH_READY=false
 echo "  Polling SSH (each attempt caps at 5s; status update every 30s)..."
 for i in $(seq 1 $SSH_RETRIES); do
+    # `< /dev/null` is critical when this script is invoked via `curl | bash` —
+    # bash's stdin is the pipe carrying the script itself, and gcloud (which
+    # forwards stdin to the remote SSH session) would otherwise read bytes
+    # from that pipe and silently eat the rest of the script.
     if gcloud compute ssh "$INSTANCE_NAME" --zone="$ZONE" \
         "${SSH_FLAGS[@]}" \
-        --command="true" &>/dev/null; then
+        --command="true" < /dev/null &>/dev/null; then
         echo "  SSH ready (after ~$((i * 5))s)"
+        SSH_READY=true
         break
     fi
     # Heartbeat every 6 attempts (~30s) so the user knows it's still working.
-    (( i % 6 == 0 )) && echo "  ...still waiting (~$((i * 5))s elapsed, attempt $i/$SSH_RETRIES)"
-    [[ $i -eq $SSH_RETRIES ]] && {
-        echo "ERROR: VM still not accepting SSH after $((SSH_RETRIES * 5))s"
-        echo "  Try \`gcloud compute ssh $INSTANCE_NAME --zone=$ZONE\` manually to see why."
-        exit 1
-    }
+    # Plain if/fi form (rather than `(( … )) && echo`) to sidestep a known
+    # bash-3.2 quirk where arithmetic compound returning false in a && chain
+    # could trip `set -e`. The break above is fine; this is just belt-and-braces.
+    if (( i % 6 == 0 )); then
+        echo "  ...still waiting (~$((i * 5))s elapsed, attempt $i/$SSH_RETRIES)"
+    fi
     sleep 5
 done
+
+if ! $SSH_READY; then
+    echo "ERROR: VM still not accepting SSH after $((SSH_RETRIES * 5))s"
+    echo "  Try \`gcloud compute ssh $INSTANCE_NAME --zone=$ZONE\` manually to see why."
+    exit 1
+fi
 
 log "[3/4] Running bootstrap on VM"
 
@@ -236,12 +248,15 @@ log "[3/4] Running bootstrap on VM"
     --command="cat > /tmp/exam_env.sh && chmod 600 /tmp/exam_env.sh"
 
 # Source the env, curl bootstrap.sh, and run as root with the env preserved.
+# `< /dev/null` so this call doesn't slurp the rest of provision.sh from
+# stdin when we're invoked via `curl | bash`.
 gcloud compute ssh "$INSTANCE_NAME" --zone="$ZONE" \
     "${SSH_FLAGS[@]}" \
     --command="source /tmp/exam_env.sh && \
                curl -fsSL '${REPO_RAW_URL}/bootstrap.sh' \
                  | sudo --preserve-env=WEATHER_API_KEY,USE_TAILSCALE,EXTERNAL_HOST bash && \
-               rm -f /tmp/exam_env.sh"
+               rm -f /tmp/exam_env.sh" \
+    < /dev/null
 
 # ── [4/4] Domain: DNS update + TLS cert ───────────────────────────────────────
 if $USE_DOMAIN; then
@@ -285,6 +300,7 @@ if $USE_DOMAIN; then
 
     # Same noise suppression we apply inside setup.sh, but this is a separate
     # SSH session so the env doesn't carry over from the bootstrap call.
+    # `< /dev/null` — see the bootstrap call above; same curl-pipe-bash reason.
     gcloud compute ssh "$INSTANCE_NAME" --zone="$ZONE" \
         "${SSH_FLAGS[@]}" \
         --command="export NEEDRESTART_SUSPEND=1 NEEDRESTART_MODE=a LC_ALL=C.UTF-8 LANG=C.UTF-8 && \
@@ -293,7 +309,8 @@ if $USE_DOMAIN; then
                    sudo --preserve-env=NEEDRESTART_SUSPEND,NEEDRESTART_MODE,LC_ALL,LANG \
                        certbot --nginx -d ${DOMAIN} \
                            --non-interactive --agree-tos --email ${CERTBOT_EMAIL} && \
-                   sudo systemctl reload nginx"
+                   sudo systemctl reload nginx" \
+        < /dev/null
     echo "  TLS certificate issued for $DOMAIN"
 fi
 
