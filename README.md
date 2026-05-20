@@ -11,7 +11,7 @@ The exam rubric measures automation efficiency by the number of manual terminal 
 ### On a fresh Ubuntu/Debian VM
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/ximi/cloud-programming/main/bootstrap.sh | sudo bash
+curl -fsSL https://raw.githubusercontent.com/ximi/cloud-programming/master/bootstrap.sh | sudo bash
 ```
 
 That is the **only** command. `bootstrap.sh` downloads the rest of the repo as a tarball and runs `setup_exam.sh`, which provisions full infrastructure and deploys the application. **N = 1 → grade 10.**
@@ -21,7 +21,7 @@ That is the **only** command. `bootstrap.sh` downloads the rest of the repo as a
 If you also want VM creation automated, run this on any laptop with `gcloud` authenticated — no local repo clone required:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/ximi/cloud-programming/main/provision.sh | bash
+curl -fsSL https://raw.githubusercontent.com/ximi/cloud-programming/master/provision.sh | bash
 ```
 
 This creates an `e2-micro` GCP VM, opens firewall rules, and triggers `bootstrap.sh` on the VM (which pulls everything from GitHub and runs `setup_exam.sh`). Single command, single source of truth.
@@ -91,7 +91,7 @@ This copies the new `webapp.py` to `/opt/`, reloads systemd, and restarts `webap
 SSH into the fresh VM and run:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/ximi/cloud-programming/main/bootstrap.sh | sudo bash
+curl -fsSL https://raw.githubusercontent.com/ximi/cloud-programming/master/bootstrap.sh | sudo bash
 ```
 
 `bootstrap.sh` downloads the repo tarball to `/tmp/cloud-programming-deploy/` and execs `setup_exam.sh`. The script prompts for the OpenWeatherMap API key interactively.
@@ -99,7 +99,7 @@ curl -fsSL https://raw.githubusercontent.com/ximi/cloud-programming/main/bootstr
 If you're SSH'ing in from your laptop in the same command, allocate a TTY so the interactive prompts work:
 
 ```bash
-ssh -t user@<vm-ip> 'curl -fsSL https://raw.githubusercontent.com/ximi/cloud-programming/main/bootstrap.sh | sudo bash'
+ssh -t user@<vm-ip> 'curl -fsSL https://raw.githubusercontent.com/ximi/cloud-programming/master/bootstrap.sh | sudo bash'
 ```
 
 Still **1 command** after VM access.

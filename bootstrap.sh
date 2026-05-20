@@ -3,14 +3,14 @@
 # Downloads the full deployment repository as a tarball and runs setup_exam.sh.
 #
 # Usage (on a fresh Ubuntu/Debian VM):
-#   curl -fsSL https://raw.githubusercontent.com/ximi/cloud-programming/main/bootstrap.sh | sudo bash
+#   curl -fsSL https://raw.githubusercontent.com/ximi/cloud-programming/master/bootstrap.sh | sudo bash
 #
 # If invoking over SSH, allocate a TTY so the interactive prompts work:
 #   ssh -t user@vm 'curl -fsSL .../bootstrap.sh | sudo bash'
 
 set -euo pipefail
 
-REPO_TARBALL="${REPO_TARBALL:-https://github.com/ximi/cloud-programming/archive/refs/heads/main.tar.gz}"
+REPO_TARBALL="${REPO_TARBALL:-https://github.com/ximi/cloud-programming/archive/refs/heads/master.tar.gz}"
 WORK_DIR="${WORK_DIR:-/tmp/cloud-programming-deploy}"
 
 if [[ $EUID -ne 0 ]]; then

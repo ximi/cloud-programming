@@ -9,7 +9,7 @@
 #   bash provision.sh
 #
 # Usage (from anywhere, no clone needed):
-#   curl -fsSL https://raw.githubusercontent.com/ximi/cloud-programming/main/provision.sh | bash
+#   curl -fsSL https://raw.githubusercontent.com/ximi/cloud-programming/master/provision.sh | bash
 #
 # Prerequisites (one-time per laptop):
 #   gcloud auth login
@@ -24,7 +24,7 @@ IMAGE_FAMILY="${IMAGE_FAMILY:-ubuntu-2204-lts}"
 IMAGE_PROJECT="${IMAGE_PROJECT:-ubuntu-os-cloud}"
 DOMAIN="${DOMAIN:-exam.maximilianzimmer.com}"
 DNS_ZONE="${DNS_ZONE:-maximilianzimmer.com}"
-REPO_RAW_URL="${REPO_RAW_URL:-https://raw.githubusercontent.com/ximi/cloud-programming/main}"
+REPO_RAW_URL="${REPO_RAW_URL:-https://raw.githubusercontent.com/ximi/cloud-programming/master}"
 
 log() { echo; echo "=== $* ==="; }
 
