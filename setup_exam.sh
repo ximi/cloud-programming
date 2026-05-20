@@ -342,7 +342,8 @@ ExecStart=/usr/local/bin/prometheus \\
     --storage.tsdb.path=/var/lib/prometheus/ \\
     --web.console.templates=/etc/prometheus/consoles \\
     --web.console.libraries=/etc/prometheus/console_libraries \\
-    --web.external-url=https://${EXTERNAL_HOST}/prometheus/
+    --web.external-url=https://${EXTERNAL_HOST}/prometheus/ \\
+    --web.route-prefix=/
 Restart=on-failure
 
 [Install]
@@ -505,9 +506,13 @@ server {
         proxy_set_header   Connection        "upgrade";
     }
 
-    # Prometheus — route-prefix derives from --web.external-url=/prometheus/.
+    # Prometheus serves at / internally (--web.route-prefix=/) and uses
+    # external-url=/prometheus/ only for generated absolute links. So Nginx
+    # strips the /prometheus/ prefix here (trailing slash on proxy_pass).
+    # This also means Grafana's localhost:9090 datasource Just Works without
+    # any path suffix.
     location /prometheus/ {
-        proxy_pass         http://127.0.0.1:9090;
+        proxy_pass         http://127.0.0.1:9090/;
         proxy_set_header   Host              \$host;
         proxy_set_header   X-Real-IP         \$remote_addr;
         proxy_set_header   X-Forwarded-For   \$proxy_add_x_forwarded_for;
@@ -524,7 +529,7 @@ sleep 5
 
 curl -sf -X POST http://admin:admin@localhost:3000/grafana/api/datasources \
   -H "Content-Type: application/json" \
-  -d '{"name":"Prometheus","type":"prometheus","url":"http://localhost:9090","access":"proxy","isDefault":true}' \
+  -d '{"name":"Prometheus","type":"prometheus","uid":"prometheus","url":"http://localhost:9090","access":"proxy","isDefault":true}' \
   | python3 -c "import sys,json; d=json.load(sys.stdin); print('  Datasource:', d.get('message','ok'))" 2>/dev/null \
   || echo "  Datasource already exists"
 
@@ -539,16 +544,26 @@ curl -sf -X POST http://admin:admin@localhost:3000/grafana/api/dashboards/db \
           "id": 1,
           "type": "timeseries",
           "title": "CPU Usage (%)",
+          "datasource": {"type": "prometheus", "uid": "prometheus"},
           "gridPos": {"h": 8, "w": 12, "x": 0, "y": 0},
-          "targets": [{"expr": "100 - (avg by(instance)(rate(node_cpu_seconds_total{mode=\"idle\"}[1m])) * 100)", "legendFormat": "CPU %"}],
+          "targets": [{
+            "datasource": {"type": "prometheus", "uid": "prometheus"},
+            "expr": "100 - (avg by(instance)(rate(node_cpu_seconds_total{mode=\"idle\"}[1m])) * 100)",
+            "legendFormat": "CPU %"
+          }],
           "fieldConfig": {"defaults": {"unit": "percent", "min": 0, "max": 100}}
         },
         {
           "id": 2,
           "type": "timeseries",
           "title": "RAM Usage (%)",
+          "datasource": {"type": "prometheus", "uid": "prometheus"},
           "gridPos": {"h": 8, "w": 12, "x": 12, "y": 0},
-          "targets": [{"expr": "100 * (1 - (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes))", "legendFormat": "RAM %"}],
+          "targets": [{
+            "datasource": {"type": "prometheus", "uid": "prometheus"},
+            "expr": "100 * (1 - (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes))",
+            "legendFormat": "RAM %"
+          }],
           "fieldConfig": {"defaults": {"unit": "percent", "min": 0, "max": 100}}
         }
       ],
