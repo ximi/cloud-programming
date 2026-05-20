@@ -77,13 +77,22 @@ The provisioner prompts for everything upfront, then runs unattended:
 
 ### Application updates (one command, after initial deployment)
 
-After the infrastructure is up, editing `webapp.py` and shipping the change is:
+After the infrastructure is up, shipping a new version of the app is:
 
 ```bash
 sudo bash deploy_app.sh
 ```
 
-This copies the new `webapp.py` to `/opt/`, reloads systemd, and restarts `webapp.service`. No Vault, Prometheus, Grafana, or Nginx work is repeated.
+By default this pulls the latest `webapp.py` from `https://raw.githubusercontent.com/ximi/cloud-programming/master/webapp.py`, installs it at `/opt/webapp.py`, and restarts `webapp.service`. No Vault, Prometheus, Grafana, or Nginx work is repeated.
+
+In a real-world setup the application would live in its own repo. Override the source with either:
+
+```bash
+sudo WEBAPP_URL=https://raw.githubusercontent.com/me/my-app/main/webapp.py bash deploy_app.sh
+sudo WEBAPP_FILE=./webapp.py bash deploy_app.sh           # install a local file (for testing before push)
+```
+
+The initial deploy invoked by `setup_exam.sh` uses the bundled tarball copy via `WEBAPP_FILE=…`, so first-time provisioning doesn't need a second round-trip to GitHub.
 
 ### Deploying on a non-GCP VM (local, AWS, DigitalOcean, etc.)
 

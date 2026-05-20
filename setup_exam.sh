@@ -590,10 +590,13 @@ fi
 vault kv put secret/grafana username=admin password="$GRAFANA_PASS" >/dev/null
 
 # ── Application deployment ────────────────────────────────────────────────────
-# Delegate to the dedicated app deployment script — same process the operator
-# would use later to ship new versions of webapp.py.
+# Delegate to the dedicated app deployment script. On initial setup we use the
+# tarball-bundled webapp.py (already extracted next to this script) instead of
+# letting deploy_app.sh re-download it from GitHub — saves one round-trip and
+# keeps the initial provision working even if the URL is temporarily unreachable.
+# A later `sudo bash deploy_app.sh` (without WEBAPP_FILE) will pull from URL.
 log "Deploying application via deploy_app.sh"
-bash "$SCRIPT_DIR/deploy_app.sh"
+WEBAPP_FILE="$SCRIPT_DIR/webapp.py" bash "$SCRIPT_DIR/deploy_app.sh"
 
 # ── [7/7] Tailscale + DNS, or show access IP ──────────────────────────────────
 log "[7/7] Network access"
