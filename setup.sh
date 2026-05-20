@@ -26,7 +26,7 @@ log() { echo; echo "=== $* ==="; }
 # ── Prompt for required and optional configuration ────────────────────────────
 echo ""
 echo "┌─────────────────────────────────────────────────┐"
-echo "│         Exam Environment Setup Script           │"
+echo "│            Infrastructure Setup                 │"
 echo "└─────────────────────────────────────────────────┘"
 echo ""
 
@@ -498,7 +498,7 @@ else
     echo "  Generating self-signed certificate for $EXTERNAL_HOST"
     openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
         -keyout "$SS_KEY" -out "$SS_CERT" \
-        -subj "/C=RO/ST=Sibiu/L=Sibiu/O=Exam/CN=${EXTERNAL_HOST}" \
+        -subj "/CN=${EXTERNAL_HOST}" \
         -addext "subjectAltName=${CERT_SAN_TYPE}:${EXTERNAL_HOST}"
     chmod 600 "$SS_KEY"
     SSL_CERT="$SS_CERT"
@@ -520,6 +520,14 @@ server {
     ssl_certificate_key ${SSL_KEY};
     ssl_protocols       TLSv1.2 TLSv1.3;
     ssl_ciphers         HIGH:!aNULL:!MD5;
+
+    # Security headers — applied at the server level so they cover the app,
+    # Grafana, and Prometheus. HSTS pins the browser to HTTPS for a year;
+    # nosniff blocks MIME-confusion attacks; the referrer policy prevents
+    # leaking the full URL (including any query string) to cross-origin links.
+    add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
+    add_header X-Content-Type-Options    "nosniff"                            always;
+    add_header Referrer-Policy           "strict-origin-when-cross-origin"    always;
 
     # Listed explicitly so \`certbot --nginx -d ${EXTERNAL_HOST}\` can find this
     # block; \`_\` keeps it as the default for any other host header.
@@ -657,8 +665,10 @@ if $USE_TAILSCALE; then
         # Use the least-privilege DDNS token, not the root token. Pass the
         # Tailscale IP explicitly — otherwise the script falls back to a
         # public-IP echo and points DNS at the home router's WAN, which is
-        # the opposite of what Tailscale is for here.
+        # the opposite of what Tailscale is for here. DDNS_DOMAIN tells the
+        # script which FQDN to maintain (no longer hardcoded).
         VAULT_TOKEN="$DDNS_TOKEN" VAULT_ADDR="$VAULT_ADDR" \
+            DDNS_DOMAIN="$EXTERNAL_HOST" \
             python3 /opt/ddns-update.py "$TAILSCALE_IP"
     else
         echo "  Warning: could not get Tailscale IP, DNS not updated"
@@ -707,7 +717,7 @@ fi
 # ── Summary ────────────────────────────────────────────────────────────────────
 echo ""
 echo "┌──────────────────────────────────────────────────────┐"
-echo "│            SETUP COMPLETE  —  1 COMMAND              │"
+echo "│                  SETUP COMPLETE                      │"
 echo "├──────────────────────┬───────────────────────────────┤"
 for svc in vault webapp nginx prometheus node_exporter grafana-server; do
     status=$(systemctl is-active "$svc" 2>/dev/null || echo "inactive")
