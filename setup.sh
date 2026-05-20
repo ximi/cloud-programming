@@ -535,17 +535,30 @@ NGINXEOF
 
 nginx -t && systemctl reload nginx
 
-# ── [6/7] Grafana: datasource and dashboard ────────────────────────────────────
+# ── [6/7] Grafana: rotate admin password, then datasource + dashboard ─────────
 log "[6/7] Configuring Grafana"
 sleep 5
 
-curl -sf -X POST http://admin:admin@localhost:3000/grafana/api/datasources \
+# Rotate the admin password BEFORE configuring datasource/dashboard, so all the
+# API calls use the new credential. grafana-cli writes directly to the DB,
+# which is more reliable than `PUT /api/user/password` (the latter refuses on
+# Grafana 10+'s "first login must change password" state).
+GRAFANA_PASS=$(openssl rand -base64 32 | tr -dc 'A-Za-z0-9' | head -c 24)
+if grafana-cli admin reset-admin-password "$GRAFANA_PASS" >/dev/null 2>&1; then
+    echo "  Grafana admin password rotated"
+else
+    echo "  Warning: grafana-cli reset-admin-password failed — keeping admin/admin"
+    GRAFANA_PASS="admin"
+fi
+vault kv put secret/grafana username=admin password="$GRAFANA_PASS" >/dev/null
+
+curl -sf -u "admin:${GRAFANA_PASS}" -X POST http://localhost:3000/grafana/api/datasources \
   -H "Content-Type: application/json" \
   -d '{"name":"Prometheus","type":"prometheus","uid":"prometheus","url":"http://localhost:9090","access":"proxy","isDefault":true}' \
   | python3 -c "import sys,json; d=json.load(sys.stdin); print('  Datasource:', d.get('message','ok'))" 2>/dev/null \
   || echo "  Datasource already exists"
 
-curl -sf -X POST http://admin:admin@localhost:3000/grafana/api/dashboards/db \
+curl -sf -u "admin:${GRAFANA_PASS}" -X POST http://localhost:3000/grafana/api/dashboards/db \
   -H "Content-Type: application/json" \
   -d '{
     "dashboard": {
@@ -585,21 +598,6 @@ curl -sf -X POST http://admin:admin@localhost:3000/grafana/api/dashboards/db \
     "overwrite": true
   }' | python3 -c "import sys,json; d=json.load(sys.stdin); print('  Dashboard:', d.get('status','?'), d.get('url',''))" 2>/dev/null \
   || echo "  Dashboard creation attempted"
-
-# Rotate the Grafana admin password off the default and stash the new one in
-# Vault. We do this AFTER the datasource/dashboard setup so those API calls can
-# still use admin/admin. Falls back to admin/admin if the rotation API errors.
-GRAFANA_PASS=$(openssl rand -base64 32 | tr -dc 'A-Za-z0-9' | head -c 24)
-if curl -sf -X PUT \
-    -H "Content-Type: application/json" \
-    -d "{\"oldPassword\":\"admin\",\"newPassword\":\"${GRAFANA_PASS}\",\"confirmNew\":\"${GRAFANA_PASS}\"}" \
-    http://admin:admin@localhost:3000/grafana/api/user/password >/dev/null; then
-    echo "  Grafana admin password rotated"
-else
-    echo "  Warning: Grafana password rotation failed — keeping admin/admin"
-    GRAFANA_PASS="admin"
-fi
-vault kv put secret/grafana username=admin password="$GRAFANA_PASS" >/dev/null
 
 # ── Application deployment ────────────────────────────────────────────────────
 # Delegate to the dedicated app deployment script. On initial setup we use the

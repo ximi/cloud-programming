@@ -135,18 +135,39 @@ fi
 echo "  Public IP: $VM_IP"
 
 # ── [2/4] Firewall ─────────────────────────────────────────────────────────────
-# Grafana (:3000) and Prometheus (:9090) are proxied through Nginx on :443, so
-# we do NOT open them directly. Clean up any rules a previous version of this
-# script may have left behind.
 log "[2/4] Firewall"
 
+# Clean up any legacy per-service rules from older provision.sh runs (Grafana
+# and Prometheus go through Nginx on :443, so they have no business being on
+# their own ports).
 for stale_rule in allow-exam-grafana allow-exam-prometheus; do
     if gcloud compute firewall-rules describe "$stale_rule" --quiet &>/dev/null; then
         gcloud compute firewall-rules delete "$stale_rule" --quiet
         echo "  Removed legacy rule: $stale_rule"
     fi
 done
-echo "  Only 80/443 are open (via the default http-server/https-server tags)."
+
+# Ensure :80 and :443 are actually open. The default-allow-http/https rules
+# ship with auto-mode VPCs but are NOT guaranteed to exist on older projects,
+# custom networks, or projects where org policy stripped them. We check for
+# any rule already covering tag+port first; only create our own if nothing
+# else matches.
+for rule_spec in "allow-app-http:80:http-server" "allow-app-https:443:https-server"; do
+    IFS=':' read -r rule_name port tag <<< "$rule_spec"
+    existing=$(gcloud compute firewall-rules list \
+        --filter="targetTags:${tag} AND allowed.ports:${port}" \
+        --format="value(name)" 2>/dev/null | head -1)
+    if [[ -n "$existing" ]]; then
+        echo "  tcp:${port} already allowed for tag ${tag} (rule: ${existing})"
+    else
+        gcloud compute firewall-rules create "$rule_name" \
+            --allow="tcp:${port}" \
+            --target-tags="$tag" \
+            --source-ranges=0.0.0.0/0 \
+            --quiet
+        echo "  Created ${rule_name} (tcp:${port} → tag ${tag})"
+    fi
+done
 
 # Settle on the public hostname now — the domain if the operator chose one,
 # otherwise the VM's public IP. This is what setup.sh will bake into the
@@ -226,16 +247,11 @@ if $USE_DOMAIN; then
     echo "  TLS certificate issued for $DOMAIN"
 fi
 
-# ── Summary ────────────────────────────────────────────────────────────────────
-BASE="https://${EXTERNAL_HOST_VALUE}"
-CERT_NOTE=""
-$USE_DOMAIN || CERT_NOTE="  (self-signed cert)"
-
-echo ""
-echo "┌──────────────────────────────────────────────────────┐"
-echo "│  PROVISIONING COMPLETE                               │"
-echo "├──────────────────────────────────────────────────────┤"
-printf "│  App       : %-39s │\n" "${BASE}${CERT_NOTE}"
-printf "│  Grafana   : %-39s │\n" "${BASE}/grafana/  (see setup output for pw)"
-printf "│  Prometheus: %-39s │\n" "${BASE}/prometheus/"
-echo "└──────────────────────────────────────────────────────┘"
+# setup.sh on the VM already printed a full summary box with services, URLs,
+# Grafana password, and the Vault unseal key — no need to repeat it locally.
+# If the domain path ran, certbot's own messages above confirm the cert. Done.
+if $USE_DOMAIN; then
+    echo "  Provisioning complete. App at: https://${DOMAIN}"
+else
+    echo "  Provisioning complete. App at: https://${EXTERNAL_HOST_VALUE}  (self-signed cert)"
+fi

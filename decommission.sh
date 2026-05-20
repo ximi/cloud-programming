@@ -45,7 +45,9 @@ if gcloud compute instances describe "$INSTANCE_NAME" --zone="$ZONE" --quiet &>/
 fi
 
 LEGACY_RULES=()
-for rule in allow-exam-grafana allow-exam-prometheus; do
+# Both the per-service rules from old provision.sh versions AND the http/https
+# rules the current provision.sh creates when GCP defaults are missing.
+for rule in allow-exam-grafana allow-exam-prometheus allow-app-http allow-app-https; do
     if gcloud compute firewall-rules describe "$rule" --quiet &>/dev/null; then
         LEGACY_RULES+=("$rule")
     fi
