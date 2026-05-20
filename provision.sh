@@ -147,7 +147,7 @@ done
 echo "  Only 80/443 are open (via the default http-server/https-server tags)."
 
 # Settle on the public hostname now — the domain if the operator chose one,
-# otherwise the VM's public IP. This is what setup_exam.sh will bake into the
+# otherwise the VM's public IP. This is what setup.sh will bake into the
 # cert SAN, Grafana root_url, Prometheus external-url, and the summary URLs.
 if $USE_DOMAIN; then
     EXTERNAL_HOST_VALUE="$DOMAIN"

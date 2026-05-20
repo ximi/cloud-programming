@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Full infrastructure provisioning from a bare Ubuntu/Debian VM.
-# Usage: sudo bash setup_exam.sh
+# Usage: sudo bash setup.sh
 set -euo pipefail
 
 PROMETHEUS_VERSION="2.52.0"

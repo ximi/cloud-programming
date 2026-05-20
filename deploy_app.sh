@@ -13,7 +13,7 @@
 #                                                       (useful for testing
 #                                                       before you push)
 #
-# Prerequisite: setup_exam.sh has run on this VM once, so webapp.service and
+# Prerequisite: setup.sh has run on this VM once, so webapp.service and
 # /etc/webapp.env exist.
 
 set -euo pipefail
@@ -27,7 +27,7 @@ if [[ $EUID -ne 0 ]]; then
 fi
 
 if [[ ! -f /etc/systemd/system/webapp.service ]]; then
-    echo "ERROR: /etc/systemd/system/webapp.service not found. Run setup_exam.sh first."
+    echo "ERROR: /etc/systemd/system/webapp.service not found. Run setup.sh first."
     exit 1
 fi
 

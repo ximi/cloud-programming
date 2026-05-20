@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # bootstrap.sh — single-command entry point for the exam deployment.
-# Downloads the full deployment repository as a tarball and runs setup_exam.sh.
+# Downloads the full deployment repository as a tarball and runs setup.sh.
 #
 # Usage (on a fresh Ubuntu/Debian VM):
 #   curl -fsSL https://raw.githubusercontent.com/ximi/cloud-programming/master/bootstrap.sh | sudo bash
@@ -25,6 +25,6 @@ mkdir -p "$WORK_DIR"
 curl -fsSL "$REPO_TARBALL" | tar -xz -C "$WORK_DIR" --strip-components=1
 chmod +x "$WORK_DIR"/*.sh
 
-echo "==> Running setup_exam.sh..."
+echo "==> Running setup.sh..."
 cd "$WORK_DIR"
-exec bash ./setup_exam.sh
+exec bash ./setup.sh
